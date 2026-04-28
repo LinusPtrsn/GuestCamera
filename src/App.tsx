@@ -1,67 +1,13 @@
 import { Camera, RefreshCw, User, Video } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
-
-type CaptureResponse = {
-  ok: boolean;
-  localPath: string;
-  albumName: string;
-  assetId?: string;
-  uploaded?: boolean;
-  message?: string;
-  warning?: string;
-};
-
-type GalleryItem = {
-  name: string;
-  url: string;
-  thumbnailUrl: string | null;
-  createdAt: string;
-  size: number;
-};
-
-type StatusResponse = {
-  immichConfigured: boolean;
-  sharedLinkConfigured: boolean;
-  storageRoot: string;
-  apiBaseUrl: string;
-  buildVersion: string;
-};
-
-type GalleryResponse = {
-  total: number;
-  recent: GalleryItem[];
-  albumUrl: string | null;
-};
-
-type FrontendLog = {
-  level: 'error' | 'warn' | 'info';
-  message: string;
-  source: string;
-  stack?: string;
-};
-
-type BuildInfoResponse = {
-  version?: unknown;
-};
+import { fetchGallery, fetchStatus, sendFrontendLog as sendFrontendLogEntry, uploadCapture as uploadCaptureRequest } from './api/client';
+import { ConfirmationPreview } from './components/ConfirmationPreview';
+import { GalleryStrip } from './components/GalleryStrip';
+import { getBuildStatus } from './hooks/useBuildStatus';
+import { useFrontendLogging } from './hooks/useFrontendLogging';
+import type { CaptureIntent, GalleryResponse, MediaKind, ShotState, StatusResponse, UploadPreviewState } from './types';
 
 type Mode = 'intro' | 'main';
-type MediaKind = 'photo' | 'video';
-type CaptureIntent = MediaKind | 'auto';
-type ShotState = {
-  kind: MediaKind;
-  blob: Blob;
-  previewUrl: string;
-  thumbnailUrl: string;
-  capturedAt: string;
-};
-
-type UploadPreviewState = {
-  id: string;
-  kind: MediaKind;
-  thumbnailUrl: string;
-  progress: number;
-  status: 'uploading' | 'done' | 'failed';
-};
 
 const STORAGE_NAME_KEY = 'guest-camera:name';
 const STORAGE_NAME_SKIPPED_KEY = 'guest-camera:name-skipped';
@@ -174,31 +120,6 @@ async function createLocalThumbnail(blob: Blob, kind: MediaKind, previewUrl: str
   }
 }
 
-function uploadCapture(form: FormData, onProgress: (progress: number) => void) {
-  return new Promise<CaptureResponse>((resolve, reject) => {
-    const request = new XMLHttpRequest();
-    request.open('POST', '/api/capture');
-    request.responseType = 'json';
-    request.upload.onprogress = (event) => {
-      if (event.lengthComputable && event.total > 0) {
-        onProgress(Math.max(0.02, Math.min(event.loaded / event.total, 0.98)));
-      }
-    };
-    request.onload = () => {
-      const payload = request.response as CaptureResponse | null;
-      if (request.status >= 200 && request.status < 300 && payload) {
-        onProgress(1);
-        resolve(payload);
-        return;
-      }
-      reject(new Error(payload?.message ?? 'Upload fehlgeschlagen'));
-    };
-    request.onerror = () => reject(new Error('Upload-Verbindung fehlgeschlagen'));
-    request.onabort = () => reject(new Error('Upload abgebrochen'));
-    request.send(form);
-  });
-}
-
 export default function App() {
   const photoInputRef = useRef<HTMLInputElement | null>(null);
   const videoInputRef = useRef<HTMLInputElement | null>(null);
@@ -239,15 +160,10 @@ export default function App() {
   const extraCount = Math.max(totalCount - 3, 0);
   const albumLink = gallery.albumUrl || '#';
   const displayName = name.trim() || 'Name';
-  const normalizedFrontendBuildVersion = frontendBuildVersion?.trim() || 'dev';
-  const normalizedBackendBuildVersion = status?.buildVersion?.trim() || null;
-  const hasBuildMismatch = normalizedBackendBuildVersion !== null && normalizedBackendBuildVersion !== normalizedFrontendBuildVersion;
-  const buildBadgeLabel = hasBuildMismatch
-    ? `FE ${normalizedFrontendBuildVersion} / BE ${normalizedBackendBuildVersion}`
-    : normalizedFrontendBuildVersion;
-  const buildBadgeTitle = hasBuildMismatch
-    ? `Frontend build ${normalizedFrontendBuildVersion} unterscheidet sich vom Backend build ${normalizedBackendBuildVersion}.`
-    : `Build ${buildBadgeLabel}`;
+  const buildStatus = getBuildStatus(frontendBuildVersion, status?.buildVersion ?? null);
+  const hasBuildMismatch = buildStatus.hasMismatch;
+  const buildBadgeLabel = buildStatus.label;
+  const buildBadgeTitle = buildStatus.title;
   const handleRefreshAction = () => {
     if (hasBuildMismatch) {
       window.location.reload();
@@ -255,23 +171,7 @@ export default function App() {
     }
     void refreshGallery({ clearLocalUpload: true });
   };
-  const sendFrontendLog = (entry: FrontendLog) => {
-    const payload = JSON.stringify({
-      ...entry,
-      pageUrl: window.location.href,
-      userAgent: navigator.userAgent
-    });
-    if (navigator.sendBeacon) {
-      navigator.sendBeacon('/api/client-log', new Blob([payload], { type: 'application/json' }));
-      return;
-    }
-    void fetch('/api/client-log', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: payload,
-      keepalive: true
-    }).catch(() => {});
-  };
+  const sendFrontendLog = sendFrontendLogEntry;
 
   const refreshGallery = async ({ clearLocalUpload = false } = {}) => {
     setGalleryLoading(true);
@@ -279,8 +179,7 @@ export default function App() {
       setLocalUpload(null);
     }
     try {
-      const response = await fetch('/api/gallery');
-      const data = (await response.json()) as GalleryResponse;
+      const data = await fetchGallery();
       setGallery(data);
     } catch (cause) {
       const text = cause instanceof Error ? cause.message : 'Galerie konnte nicht geladen werden';
@@ -310,15 +209,7 @@ export default function App() {
 
   useEffect(() => {
     let active = true;
-    void Promise.all([
-      fetch('/build-info.json', { cache: 'no-store' })
-        .then(async (res) => {
-          if (!res.ok) throw new Error(`Build-Info konnte nicht geladen werden (${res.status})`);
-          return (await res.json()) as BuildInfoResponse;
-        })
-        .catch(() => ({ version: null })),
-      fetch('/api/status').then((res) => res.json() as Promise<StatusResponse>)
-    ])
+    void fetchStatus()
       .then(([buildInfo, data]) => {
         if (!active) return;
         setFrontendBuildVersion(typeof buildInfo.version === 'string' ? buildInfo.version : null);
@@ -356,95 +247,7 @@ export default function App() {
     };
   }, []);
 
-  useEffect(() => {
-    const originalConsole = {
-      debug: console.debug.bind(console),
-      error: console.error.bind(console),
-      info: console.info.bind(console),
-      log: console.log.bind(console),
-      warn: console.warn.bind(console)
-    };
-    const serializeConsoleArg = (value: unknown) => {
-      if (value instanceof Error) {
-        return `${value.name}: ${value.message}${value.stack ? `\n${value.stack}` : ''}`;
-      }
-      if (typeof value === 'string') {
-        return value;
-      }
-      try {
-        return JSON.stringify(value);
-      } catch {
-        return String(value);
-      }
-    };
-    const wrapConsole = (method: keyof typeof originalConsole, level: FrontendLog['level']) => {
-      console[method] = (...args: unknown[]) => {
-        originalConsole[method](...args);
-        sendFrontendLog({
-          level,
-          message: args.map(serializeConsoleArg).join(' '),
-          source: `console.${method}`,
-          stack: args.find((arg): arg is Error => arg instanceof Error)?.stack
-        });
-      };
-    };
-    wrapConsole('debug', 'info');
-    wrapConsole('log', 'info');
-    wrapConsole('info', 'info');
-    wrapConsole('warn', 'warn');
-    wrapConsole('error', 'error');
-
-    const onWindowError = (event: ErrorEvent) => {
-      sendFrontendLog({
-        level: 'error',
-        message: event.message || 'Window error',
-        source: 'window.error',
-        stack: event.error instanceof Error ? event.error.stack : undefined
-      });
-    };
-    const onUnhandledRejection = (event: PromiseRejectionEvent) => {
-      const reason = event.reason;
-      sendFrontendLog({
-        level: 'error',
-        message: reason instanceof Error ? reason.message : String(reason ?? 'Unhandled rejection'),
-        source: 'window.unhandledrejection',
-        stack: reason instanceof Error ? reason.stack : undefined
-      });
-    };
-    const onPageHide = () => {
-      if (pendingShotRef.current) {
-        sendFrontendLog({
-          level: 'warn',
-          message: 'Page hidden while confirmation preview was open',
-          source: 'pagehide'
-        });
-      }
-    };
-    const onVisibilityChange = () => {
-      if (document.visibilityState === 'hidden' && pendingShotRef.current) {
-        sendFrontendLog({
-          level: 'warn',
-          message: 'Document hidden while confirmation preview was open',
-          source: 'visibilitychange'
-        });
-      }
-    };
-    window.addEventListener('error', onWindowError);
-    window.addEventListener('unhandledrejection', onUnhandledRejection);
-    window.addEventListener('pagehide', onPageHide);
-    document.addEventListener('visibilitychange', onVisibilityChange);
-    return () => {
-      console.debug = originalConsole.debug;
-      console.error = originalConsole.error;
-      console.info = originalConsole.info;
-      console.log = originalConsole.log;
-      console.warn = originalConsole.warn;
-      window.removeEventListener('error', onWindowError);
-      window.removeEventListener('unhandledrejection', onUnhandledRejection);
-      window.removeEventListener('pagehide', onPageHide);
-      document.removeEventListener('visibilitychange', onVisibilityChange);
-    };
-  }, []);
+  useFrontendLogging({ hasPendingPreview: () => !!pendingShotRef.current, sendLog: sendFrontendLog });
 
   const openNativeCamera = () => {
     setCaptureKind('photo');
@@ -532,7 +335,7 @@ export default function App() {
       form.append('capturedAt', shot.capturedAt);
       form.append('photo', shot.blob, `guest-camera-${Date.now()}${extensionForMedia(shot.kind, mimeType)}`);
 
-      const payload = await uploadCapture(form, (progress) => {
+      const payload = await uploadCaptureRequest(form, (progress) => {
         setLocalUpload((current) => current?.id === uploadId ? { ...current, progress, status: 'uploading' } : current);
       });
 
@@ -669,52 +472,14 @@ export default function App() {
           </div>
         </div>
 
-        <section className="gallery-block">
-          <a className="gallery-grid" href={albumLink} target="_blank" rel="noreferrer" aria-label="Gesamtes Album öffnen">
-            {[0, 1, 2].map((slot) => {
-              if (slot === 0 && localUpload) {
-                const label =
-                  localUpload.status === 'failed'
-                    ? 'Upload fehlgeschlagen'
-                    : localUpload.status === 'done'
-                      ? localUpload.kind === 'video' ? 'Video hochgeladen' : 'Foto hochgeladen'
-                      : localUpload.kind === 'video' ? 'Video wird hochgeladen' : 'Foto wird hochgeladen';
-                return (
-                  <div key={localUpload.id} className={`gallery-cell gallery-cell-uploading is-${localUpload.status}`} aria-live="polite">
-                    <img className="upload-preview-image" src={localUpload.thumbnailUrl} alt="" />
-                    <div className="upload-placeholder">
-                      <span>{label}</span>
-                      <div className="upload-bar" aria-hidden="true">
-                        <div className="upload-bar-fill" style={{ width: `${Math.round(localUpload.progress * 100)}%` }} />
-                      </div>
-                      <small>{Math.round(localUpload.progress * 100)}%</small>
-                    </div>
-                  </div>
-                );
-              }
-
-              const item = recent[localUpload ? slot - 1 : slot];
-              return (
-                <div key={slot} className={`gallery-cell gallery-cell-${slot + 1}`}>
-                  {item?.thumbnailUrl ? <img src={item.thumbnailUrl} alt="" loading="lazy" /> : null}
-                </div>
-              );
-            })}
-            <div className="gallery-cell gallery-cell-more">
-              {galleryLoading ? (
-                <div className="gallery-loading" aria-live="polite">
-                  <span className="loading-ring" aria-hidden="true" />
-                  <small>Album lädt</small>
-                </div>
-              ) : (
-                <>
-                  <span>+{extraCount}</span>
-                  <small>{totalCount} Fotos</small>
-                </>
-              )}
-            </div>
-          </a>
-        </section>
+        <GalleryStrip
+          albumLink={albumLink}
+          extraCount={extraCount}
+          galleryLoading={galleryLoading}
+          localUpload={localUpload}
+          recent={recent}
+          totalCount={totalCount}
+        />
 
         {!pendingShot ? (
           <div className="shot-stack">
@@ -766,25 +531,7 @@ export default function App() {
           tabIndex={-1}
         />
 
-        {pendingShot ? (
-          <div className="confirm-overlay" role="dialog" aria-modal="true" aria-label={pendingShot.kind === 'video' ? 'Video bestätigen' : 'Foto bestätigen'}>
-            <div className="confirm-shell">
-              {pendingShot.kind === 'video' ? (
-                <video className="preview-media confirm-media" src={pendingShot.previewUrl} controls playsInline autoPlay muted />
-              ) : (
-                <img className="preview-image confirm-image" src={pendingShot.previewUrl} alt="Aufgenommenes Foto" />
-              )}
-              <div className="confirm-actions">
-                <button className="button secondary preview-secondary" type="button" onClick={discardShot} disabled={busy}>
-                  Nicht jetzt
-                </button>
-                <button className="button primary preview-primary" type="button" onClick={confirmUpload} disabled={busy}>
-                  {pendingShot.kind === 'video' ? 'Video hochladen' : 'Upload'}
-                </button>
-              </div>
-            </div>
-          </div>
-        ) : null}
+        {pendingShot ? <ConfirmationPreview busy={busy} onConfirm={confirmUpload} onDiscard={discardShot} shot={pendingShot} /> : null}
 
         {error ? <p className="error">{error}</p> : null}
       </section>
