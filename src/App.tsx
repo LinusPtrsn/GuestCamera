@@ -16,6 +16,11 @@ type BeforeInstallPromptEvent = Event & {
 const STORAGE_NAME_KEY = 'guest-camera:name';
 const STORAGE_NAME_SKIPPED_KEY = 'guest-camera:name-skipped';
 
+function isStandaloneApp() {
+  return window.matchMedia('(display-mode: standalone)').matches
+    || Boolean((window.navigator as Navigator & { standalone?: boolean }).standalone);
+}
+
 function extensionForMedia(kind: MediaKind, mimeType: string) {
   if (kind === 'video') {
     if (mimeType === 'video/mp4') return '.mp4';
@@ -160,7 +165,7 @@ export default function App() {
   const [autoUpload, setAutoUpload] = useState(false);
   const [installPrompt, setInstallPrompt] = useState<BeforeInstallPromptEvent | null>(null);
   const [installHint, setInstallHint] = useState('');
-  const [isInstalled, setIsInstalled] = useState(false);
+  const [isInstalled, setIsInstalled] = useState(() => isStandaloneApp());
 
   const recent = gallery.recent.slice(0, 3);
   const totalCount = gallery.total;
@@ -282,9 +287,9 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    const standalone = window.matchMedia('(display-mode: standalone)').matches
-      || Boolean((window.navigator as Navigator & { standalone?: boolean }).standalone);
-    setIsInstalled(standalone);
+    const displayMode = window.matchMedia('(display-mode: standalone)');
+    const updateStandaloneState = () => setIsInstalled(isStandaloneApp());
+    updateStandaloneState();
 
     const onBeforeInstallPrompt = (event: Event) => {
       event.preventDefault();
@@ -297,9 +302,11 @@ export default function App() {
       setIsInstalled(true);
     };
 
+    displayMode.addEventListener('change', updateStandaloneState);
     window.addEventListener('beforeinstallprompt', onBeforeInstallPrompt);
     window.addEventListener('appinstalled', onAppInstalled);
     return () => {
+      displayMode.removeEventListener('change', updateStandaloneState);
       window.removeEventListener('beforeinstallprompt', onBeforeInstallPrompt);
       window.removeEventListener('appinstalled', onAppInstalled);
     };
