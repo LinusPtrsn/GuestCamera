@@ -1,11 +1,13 @@
 import { createServer } from 'node:http';
-import { readFile, mkdir, writeFile, stat, appendFile, mkdtemp, rm } from 'node:fs/promises';
-import { createReadStream, existsSync, readFileSync } from 'node:fs';
+import { request as httpRequest } from 'node:http';
+import { request as httpsRequest } from 'node:https';
+import { mkdir, stat, appendFile, mkdtemp, rm, rename } from 'node:fs/promises';
+import { createReadStream, createWriteStream, existsSync, readFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
-import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import crypto from 'node:crypto';
+import Busboy from 'busboy';
 
 type ImmichSharedLinkAuth = {
   key?: string;
@@ -44,16 +46,17 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const projectRoot = path.resolve(__dirname, '..');
 const clientDist = path.join(projectRoot, 'dist', 'client');
-const tempRoot = path.join(os.tmpdir(), 'guest-camera');
+const localEnvPath = path.join(projectRoot, '.env');
+
+loadDotEnv(localEnvPath);
+
+const tempRoot = path.resolve(process.env.UPLOAD_STAGING_DIR?.trim() || path.join(projectRoot, 'uploads'));
 const logsRoot = path.resolve(projectRoot, 'logs');
 const frontendLogPath = path.join(logsRoot, 'frontend-client.ndjson');
-const localEnvPath = path.join(projectRoot, '.env');
 const maxUploadBytes = Number(process.env.MAX_UPLOAD_BYTES ?? 250 * 1024 * 1024);
 const thumbnailAvailabilityCache = new Map<string, { ok: boolean; checkedAt: number }>();
 const thumbnailResponseCache = new Map<string, { body: Buffer; contentType: string; checkedAt: number }>();
 const defaultBuildVersion = 'dev';
-
-loadDotEnv(localEnvPath);
 
 const configuredExiftoolPath = process.env.EXIFTOOL_PATH?.trim();
 const exiftoolCandidates = configuredExiftoolPath ? [configuredExiftoolPath] : ['exiftool'];
@@ -339,55 +342,120 @@ async function getImmichGallery() {
   return { total, recent, albumUrl: immichSharedLinkUrl || null };
 }
 
-async function parseMultipart(req: any) {
+type CaptureUpload = {
+  fields: Map<string, string>;
+  tempDir: string;
+  filePath: string;
+};
+
+async function parseMultipart(req: any): Promise<CaptureUpload> {
   const contentType = String(req.headers['content-type'] ?? '');
-  const match = contentType.match(/boundary=(?:"([^"]+)"|([^;]+))/i);
-  if (!match) {
+  if (!contentType.toLowerCase().startsWith('multipart/form-data')) {
     throw new Error('Missing multipart boundary');
   }
 
-  const boundary = `--${match[1] ?? match[2]}`;
-  const chunks: Buffer[] = [];
-  let totalBytes = 0;
-  for await (const chunk of req) {
-    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-    chunks.push(buffer);
-    totalBytes += buffer.length;
-    if (totalBytes > maxUploadBytes) {
-      throw new Error('Upload too large');
-    }
-  }
+  const tempDir = await mkdtemp(path.join(tempRoot, 'upload-'));
+  const uploadPath = path.join(tempDir, 'asset.upload');
+  const fields = new Map<string, string>();
 
-  const body = Buffer.concat(chunks);
-  const parts = body.toString('binary').split(boundary);
-  const fields = new Map<string, string | Buffer>();
+  return new Promise((resolve, reject) => {
+    const busboy = Busboy({
+      headers: req.headers,
+      limits: maxUploadBytes > 0 ? { fileSize: maxUploadBytes } : undefined
+    });
+    let fileFound = false;
+    let activeFile: NodeJS.ReadableStream | null = null;
+    let fileWrite: ReturnType<typeof createWriteStream> | null = null;
+    let fileWritten: Promise<void> | null = null;
+    let completed = false;
 
-  for (const part of parts) {
-    if (!part.includes('Content-Disposition')) {
-      continue;
-    }
+    const fail = (cause: Error) => {
+      if (completed) {
+        return;
+      }
+      completed = true;
+      req.unpipe(busboy);
+      req.resume();
+      activeFile?.unpipe(fileWrite ?? undefined);
+      activeFile?.resume();
+      fileWrite?.end();
+      void rm(tempDir, { recursive: true, force: true });
+      setTimeout(() => {
+        void rm(tempDir, { recursive: true, force: true });
+      }, 1000);
+      reject(cause);
+    };
 
-    const headerEnd = part.indexOf('\r\n\r\n');
-    if (headerEnd === -1) {
-      continue;
-    }
+    busboy.on('field', (name, value) => {
+      fields.set(name, value);
+    });
+    busboy.on('file', (name, file) => {
+      if (name !== 'photo' || fileFound) {
+        file.resume();
+        return;
+      }
 
-    const rawHeaders = part.slice(0, headerEnd);
-    const rawValue = part.slice(headerEnd + 4).replace(/\r\n--$/, '');
-    const nameMatch = rawHeaders.match(/name="([^"]+)"/);
-    if (!nameMatch) {
-      continue;
-    }
+      fileFound = true;
+      activeFile = file;
+      fileWrite = createWriteStream(uploadPath, { flags: 'wx' });
+      fileWritten = new Promise((resolve, reject) => {
+        fileWrite?.on('finish', resolve);
+        fileWrite?.on('error', reject);
+      });
+      file.on('limit', () => {
+        fail(new Error('Upload too large'));
+      });
+      file.on('error', fail);
+      fileWrite.on('error', fail);
+      file.pipe(fileWrite);
+    });
+    busboy.on('error', fail);
+    busboy.on('finish', () => {
+      if (completed) {
+        return;
+      }
+      if (!fileFound || !fileWritten) {
+        fail(new Error('Foto fehlt'));
+        return;
+      }
+      fileWritten
+        .then(() => {
+          if (completed) {
+            return;
+          }
+          completed = true;
+          resolve({ fields, tempDir, filePath: uploadPath });
+        })
+        .catch(fail);
+    });
 
-    const fileNameMatch = rawHeaders.match(/filename="([^"]*)"/);
-    if (fileNameMatch) {
-      fields.set(nameMatch[1], Buffer.from(rawValue, 'binary'));
-    } else {
-      fields.set(nameMatch[1], rawValue.trim());
-    }
-  }
+    req.pipe(busboy);
+  });
+}
 
-  return fields;
+async function sha1File(filePath: string) {
+  const hash = crypto.createHash('sha1');
+  await new Promise<void>((resolve, reject) => {
+    const stream = createReadStream(filePath);
+    stream.on('data', (chunk) => hash.update(chunk));
+    stream.on('error', reject);
+    stream.on('end', resolve);
+  });
+  return hash.digest('hex');
+}
+
+function multipartField(boundary: string, name: string, value: string) {
+  return Buffer.from(
+    `--${boundary}\r\nContent-Disposition: form-data; name="${name}"\r\n\r\n${value}\r\n`,
+    'utf8'
+  );
+}
+
+function multipartFileHeader(boundary: string, name: string, filename: string, mimeType: string) {
+  return Buffer.from(
+    `--${boundary}\r\nContent-Disposition: form-data; name="${name}"; filename="${filename}"\r\nContent-Type: ${mimeType}\r\n\r\n`,
+    'utf8'
+  );
 }
 
 async function uploadToImmich(filePath: string, capturedAt: string, mimeType: string) {
@@ -395,18 +463,8 @@ async function uploadToImmich(filePath: string, capturedAt: string, mimeType: st
     return { uploaded: false, warning: 'IMMICH_SHARED_LINK_URL fehlt oder ist keine gueltige URL' };
   }
 
-  const fileBuffer = await readFile(filePath);
   const filename = path.basename(filePath);
-  const checksum = crypto.createHash('sha1').update(fileBuffer).digest('hex');
-
-  const form = new FormData();
-  form.append('assetData', new Blob([fileBuffer], { type: mimeType }), filename);
-  form.append('deviceAssetId', checksum);
-  form.append('deviceId', 'guest-camera');
-  form.append('fileCreatedAt', capturedAt);
-  form.append('fileModifiedAt', capturedAt);
-  form.append('filename', filename);
-  form.append('isFavorite', 'false');
+  const checksum = await sha1File(filePath);
 
   const uploadUrl = new URL(`${immichBaseUrl}/assets`);
   if (immichSharedLink?.key) {
@@ -416,21 +474,65 @@ async function uploadToImmich(filePath: string, capturedAt: string, mimeType: st
     uploadUrl.searchParams.set('slug', immichSharedLink.slug);
   }
 
-  const uploadResponse = await fetch(uploadUrl, {
-    method: 'POST',
-    headers: {
-      Accept: 'application/json',
-      ...(immichApiKey ? { 'x-api-key': immichApiKey } : {})
-    },
-    body: form
+  const boundary = `guest-camera-${crypto.randomUUID()}`;
+  const fileHeader = multipartFileHeader(boundary, 'assetData', filename, mimeType);
+  const fields = [
+    multipartField(boundary, 'deviceAssetId', checksum),
+    multipartField(boundary, 'deviceId', 'guest-camera'),
+    multipartField(boundary, 'fileCreatedAt', capturedAt),
+    multipartField(boundary, 'fileModifiedAt', capturedAt),
+    multipartField(boundary, 'filename', filename),
+    multipartField(boundary, 'isFavorite', 'false')
+  ];
+  const footer = Buffer.from(`\r\n--${boundary}--\r\n`, 'utf8');
+  const fileSize = (await stat(filePath)).size;
+  const contentLength = [...fields, fileHeader, footer].reduce((sum, chunk) => sum + chunk.byteLength, fileSize);
+
+  const uploadResult = await new Promise<{ id?: string; status?: string; duplicate?: boolean }>((resolve, reject) => {
+    const transportRequest = uploadUrl.protocol === 'http:' ? httpRequest : httpsRequest;
+    const request = transportRequest(
+      uploadUrl,
+      {
+        method: 'POST',
+        headers: {
+          Accept: 'application/json',
+          'Content-Type': `multipart/form-data; boundary=${boundary}`,
+          'Content-Length': contentLength,
+          ...(immichApiKey ? { 'x-api-key': immichApiKey } : {})
+        }
+      },
+      (response) => {
+        const chunks: Buffer[] = [];
+        response.on('data', (chunk) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
+        response.on('end', () => {
+          const text = Buffer.concat(chunks).toString('utf8');
+          if (!response.statusCode || response.statusCode < 200 || response.statusCode >= 300) {
+            reject(new Error(`Immich upload failed: ${response.statusCode ?? 'unknown'} ${text}`));
+            return;
+          }
+          try {
+            resolve(JSON.parse(text));
+          } catch {
+            reject(new Error(`Immich upload returned invalid JSON: ${text}`));
+          }
+        });
+      }
+    );
+    request.on('error', reject);
+    for (const field of fields) {
+      request.write(field);
+    }
+    request.write(fileHeader);
+    const fileStream = createReadStream(filePath);
+    fileStream.on('error', (cause) => {
+      request.destroy(cause);
+    });
+    fileStream.on('end', () => {
+      request.end(footer);
+    });
+    fileStream.pipe(request, { end: false });
   });
 
-  if (!uploadResponse.ok) {
-    const text = await uploadResponse.text();
-    throw new Error(`Immich upload failed: ${uploadResponse.status} ${text}`);
-  }
-
-  const uploadResult = (await uploadResponse.json()) as { id?: string; status?: string; duplicate?: boolean };
   return { uploaded: true, assetId: uploadResult.id };
 }
 
@@ -508,30 +610,23 @@ function mergeWarnings(...warnings: Array<string | undefined>) {
 }
 
 async function handleCapture(req: any, res: any) {
-  let form: Map<string, string | Buffer>;
+  let upload: CaptureUpload;
   try {
-    form = await parseMultipart(req);
+    upload = await parseMultipart(req);
   } catch (cause) {
     const message = cause instanceof Error ? cause.message : 'Upload konnte nicht gelesen werden';
     json(res, message === 'Upload too large' ? 413 : 400, { ok: false, message });
     return;
   }
 
-  const name = String(form.get('name') ?? '').trim();
-  const mimeType = String(form.get('mimeType') ?? 'image/jpeg');
-  const capturedAt = String(form.get('capturedAt') ?? new Date().toISOString());
-  const photo = form.get('photo');
-
-  if (!Buffer.isBuffer(photo)) {
-    json(res, 400, { ok: false, message: 'Foto fehlt' });
-    return;
-  }
+  const name = String(upload.fields.get('name') ?? '').trim();
+  const mimeType = String(upload.fields.get('mimeType') ?? 'image/jpeg');
+  const capturedAt = String(upload.fields.get('capturedAt') ?? new Date().toISOString());
 
   const extension = extensionForMimeType(mimeType);
   const filename = `${capturedAt.replace(/[:.]/g, '-')}-${crypto.randomUUID().slice(0, 8)}${extension}`;
-  const tempDir = await mkdtemp(path.join(tempRoot, 'upload-'));
-  const fullPath = path.join(tempDir, filename);
-  await writeFile(fullPath, photo);
+  const fullPath = path.join(upload.tempDir, filename);
+  await rename(upload.filePath, fullPath);
 
   let metadataWarning = '';
   let uploadResult: { uploaded: boolean; albumId?: string; assetId?: string; warning?: string };
@@ -550,10 +645,10 @@ async function handleCapture(req: any, res: any) {
       albumName: 'Immich Shared Link',
       message: cause instanceof Error ? cause.message : 'Immich upload failed'
     });
-    await rm(tempDir, { recursive: true, force: true }).catch(() => {});
+    await rm(upload.tempDir, { recursive: true, force: true }).catch(() => {});
     return;
   }
-  await rm(tempDir, { recursive: true, force: true }).catch(() => {});
+  await rm(upload.tempDir, { recursive: true, force: true }).catch(() => {});
 
   json(res, 200, {
     ok: true,
@@ -574,7 +669,8 @@ async function serveStatic(req: any, res: any) {
     json(res, 200, {
       immichConfigured,
       sharedLinkConfigured: !!immichSharedLink,
-      storageRoot: '',
+      storageRoot: tempRoot,
+      maxUploadBytes,
       apiBaseUrl: immichBaseUrl,
       buildVersion
     });

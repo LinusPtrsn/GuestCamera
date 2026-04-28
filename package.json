@@ -12,11 +12,13 @@
     "tunnel:only": "node scripts/tunnel-only.mjs"
   },
   "dependencies": {
+    "busboy": "^1.6.0",
     "lucide-react": "^0.542.0",
     "react": "^19.1.1",
     "react-dom": "^19.1.1"
   },
   "devDependencies": {
+    "@types/busboy": "^1.5.4",
     "@types/node": "^24.3.0",
     "@types/react": "^19.1.12",
     "@types/react-dom": "^19.1.9",
