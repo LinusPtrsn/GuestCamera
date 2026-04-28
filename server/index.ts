@@ -59,14 +59,14 @@ const exiftoolCandidates = [
 loadDotEnv(localEnvPath);
 
 const port = Number(process.env.PORT ?? 3001);
-const immichBaseUrl = normalizeImmichUrl(process.env.IMMICH_INSTANCE_URL ?? 'http://127.0.0.1:2283/api');
 const immichApiKey = process.env.IMMICH_API_KEY?.trim() ?? '';
+const immichSharedLinkUrl = process.env.IMMICH_SHARED_LINK_URL?.trim() || '';
+const immichBaseUrl = resolveImmichBaseUrl(immichSharedLinkUrl);
 const immichSharedLink = resolveSharedLinkAuth(
-  process.env.IMMICH_SHARED_LINK_URL?.trim() || process.env.IMMICH_SHARED_LINK_KEY?.trim() || '',
+  immichSharedLinkUrl || process.env.IMMICH_SHARED_LINK_KEY?.trim() || '',
   process.env.IMMICH_SHARED_LINK_SLUG?.trim() ?? '',
 );
-const immichSharedLinkUrl = process.env.IMMICH_SHARED_LINK_URL?.trim() || '';
-const immichConfigured = immichApiKey.length > 0 || !!immichSharedLink;
+const immichConfigured = !!immichBaseUrl && (immichApiKey.length > 0 || !!immichSharedLink);
 
 async function ensureDirectories() {
   await mkdir(tempRoot, { recursive: true });
@@ -134,6 +134,22 @@ function normalizeImmichUrl(url: string) {
   return url.replace(/\/+$/, '');
 }
 
+function resolveImmichBaseUrl(sharedLinkUrl: string) {
+  if (!sharedLinkUrl) {
+    return '';
+  }
+
+  try {
+    const parsed = new URL(sharedLinkUrl);
+    parsed.pathname = '/api';
+    parsed.search = '';
+    parsed.hash = '';
+    return normalizeImmichUrl(parsed.toString());
+  } catch {
+    return '';
+  }
+}
+
 function json(res: any, status: number, body: unknown) {
   const payload = JSON.stringify(body);
   res.writeHead(status, {
@@ -170,6 +186,9 @@ function addSharedLinkParams(url: URL) {
 }
 
 function immichApiUrl(pathname: string, params: Record<string, string | undefined> = {}) {
+  if (!immichBaseUrl) {
+    throw new Error('IMMICH_SHARED_LINK_URL fehlt oder ist keine gueltige URL');
+  }
   const url = new URL(`${immichBaseUrl}${pathname}`);
   addSharedLinkParams(url);
   for (const [key, value] of Object.entries(params)) {
@@ -373,7 +392,7 @@ async function parseMultipart(req: any) {
 
 async function uploadToImmich(filePath: string, capturedAt: string, mimeType: string) {
   if (!immichConfigured) {
-    return { uploaded: false, warning: 'IMMICH_SHARED_LINK_URL oder IMMICH_SHARED_LINK_KEY fehlt' };
+    return { uploaded: false, warning: 'IMMICH_SHARED_LINK_URL fehlt oder ist keine gueltige URL' };
   }
 
   const fileBuffer = await readFile(filePath);
