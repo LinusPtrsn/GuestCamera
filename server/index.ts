@@ -48,6 +48,7 @@ const tempRoot = path.join(os.tmpdir(), 'guest-camera');
 const logsRoot = path.resolve(projectRoot, 'logs');
 const frontendLogPath = path.join(logsRoot, 'frontend-errors.ndjson');
 const localEnvPath = path.join(projectRoot, '.env');
+const maxUploadBytes = Number(process.env.MAX_UPLOAD_BYTES ?? 250 * 1024 * 1024);
 const thumbnailAvailabilityCache = new Map<string, { ok: boolean; checkedAt: number }>();
 const thumbnailResponseCache = new Map<string, { body: Buffer; contentType: string; checkedAt: number }>();
 const exiftoolCandidates = [
@@ -332,9 +333,12 @@ async function parseMultipart(req: any) {
 
   const boundary = `--${match[1] ?? match[2]}`;
   const chunks: Buffer[] = [];
+  let totalBytes = 0;
   for await (const chunk of req) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-    if (Buffer.concat(chunks).length > 20 * 1024 * 1024) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    chunks.push(buffer);
+    totalBytes += buffer.length;
+    if (totalBytes > maxUploadBytes) {
       throw new Error('Upload too large');
     }
   }
@@ -455,7 +459,15 @@ async function writeDescriptionMetadata(filePath: string, description: string) {
 }
 
 async function handleCapture(req: any, res: any) {
-  const form = await parseMultipart(req);
+  let form: Map<string, string | Buffer>;
+  try {
+    form = await parseMultipart(req);
+  } catch (cause) {
+    const message = cause instanceof Error ? cause.message : 'Upload konnte nicht gelesen werden';
+    json(res, message === 'Upload too large' ? 413 : 400, { ok: false, message });
+    return;
+  }
+
   const name = String(form.get('name') ?? '').trim();
   const mimeType = String(form.get('mimeType') ?? 'image/jpeg');
   const capturedAt = String(form.get('capturedAt') ?? new Date().toISOString());
