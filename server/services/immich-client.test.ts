@@ -10,7 +10,7 @@ describe('ImmichClient', () => {
     const filePath = path.join(tempRoot, 'asset.jpg');
     try {
       await writeFile(filePath, 'asset');
-      const client = new ImmichClient({ apiKey: '', baseUrl: '', sharedLink: null });
+      const client = new ImmichClient({ baseUrl: '', sharedLink: null });
 
       await expect(client.uploadAsset(filePath, new Date().toISOString(), 'image/jpeg'))
         .rejects.toThrow('IMMICH_SHARED_LINK_URL fehlt oder ist keine gueltige URL');

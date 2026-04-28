@@ -20,7 +20,6 @@ const {
   clientDist,
   exiftoolCandidates,
   frontendLogPath,
-  immichApiKey,
   immichBaseUrl,
   immichConfigured,
   immichSharedLink,
@@ -32,7 +31,7 @@ const {
 } = config;
 const thumbnailAvailabilityCache = new Map<string, { ok: boolean; checkedAt: number }>();
 const thumbnailResponseCache = new Map<string, { body: Buffer; contentType: string; checkedAt: number }>();
-const immichClient = new ImmichClient({ apiKey: immichApiKey, baseUrl: immichBaseUrl, sharedLink: immichSharedLink });
+const immichClient = new ImmichClient({ baseUrl: immichBaseUrl, sharedLink: immichSharedLink });
 
 async function ensureDirectories() {
   await mkdir(tempRoot, { recursive: true });
@@ -91,8 +90,7 @@ function immichApiUrl(pathname: string, params: Record<string, string | undefine
 async function fetchImmichJson<T>(pathname: string, params: Record<string, string | undefined> = {}) {
   const response = await fetch(immichApiUrl(pathname, params), {
     headers: {
-      Accept: 'application/json',
-      ...(immichApiKey ? { 'x-api-key': immichApiKey } : {})
+      Accept: 'application/json'
     }
   });
   if (!response.ok) {
@@ -125,12 +123,7 @@ async function hasImmichThumbnail(assetId: string, thumbnailUrl: string) {
     return cached.ok;
   }
 
-  const response = await fetch(thumbnailUrl, {
-    method: 'HEAD',
-    headers: {
-      ...(immichApiKey ? { 'x-api-key': immichApiKey } : {})
-    }
-  });
+  const response = await fetch(thumbnailUrl, { method: 'HEAD' });
   const ok = response.ok && !!response.headers.get('content-type')?.startsWith('image/');
   thumbnailAvailabilityCache.set(assetId, { ok, checkedAt: Date.now() });
   return ok;
@@ -145,8 +138,7 @@ async function getCachedImmichThumbnail(assetId: string, thumbhash?: string | nu
 
   const response = await fetch(getImmichThumbnailUrl(assetId, thumbhash), {
     headers: {
-      Accept: 'image/*',
-      ...(immichApiKey ? { 'x-api-key': immichApiKey } : {})
+      Accept: 'image/*'
     }
   });
   const contentType = response.headers.get('content-type') ?? '';

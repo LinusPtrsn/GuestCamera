@@ -12,7 +12,6 @@ import type {
 } from '../types';
 
 type ImmichClientOptions = {
-  apiKey: string;
   baseUrl: string;
   sharedLink: ImmichSharedLinkAuth | null;
 };
@@ -21,7 +20,7 @@ export class ImmichClient {
   constructor(private options: ImmichClientOptions) {}
 
   get configured() {
-    return !!this.options.baseUrl && (this.options.apiKey.length > 0 || !!this.options.sharedLink);
+    return !!this.options.baseUrl && !!this.options.sharedLink;
   }
 
   apiUrl(pathname: string, params: Record<string, string | undefined> = {}) {
@@ -46,8 +45,7 @@ export class ImmichClient {
   async fetchJson<T>(pathname: string, params: Record<string, string | undefined> = {}) {
     const response = await fetch(this.apiUrl(pathname, params), {
       headers: {
-        Accept: 'application/json',
-        ...(this.options.apiKey ? { 'x-api-key': this.options.apiKey } : {})
+        Accept: 'application/json'
       }
     });
     if (!response.ok) {
@@ -93,13 +91,12 @@ export class ImmichClient {
         uploadUrl,
         {
           method: 'POST',
-          headers: {
-            Accept: 'application/json',
-            'Content-Type': `multipart/form-data; boundary=${boundary}`,
-            'Content-Length': contentLength,
-            ...(this.options.apiKey ? { 'x-api-key': this.options.apiKey } : {})
-          }
-        },
+        headers: {
+          Accept: 'application/json',
+          'Content-Type': `multipart/form-data; boundary=${boundary}`,
+          'Content-Length': contentLength
+        }
+      },
         (response) => {
           const chunks: Buffer[] = [];
           response.on('data', (chunk) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));

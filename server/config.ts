@@ -88,16 +88,13 @@ export function createServerConfig(projectRoot: string) {
     immichSharedLinkUrl || process.env.IMMICH_SHARED_LINK_KEY?.trim() || '',
     process.env.IMMICH_SHARED_LINK_SLUG?.trim() ?? '',
   );
-  const immichApiKey = process.env.IMMICH_API_KEY?.trim() ?? '';
-
   return {
     buildVersion: process.env.GUEST_CAMERA_BUILD_VERSION?.trim() || 'dev',
     clientDist: path.join(projectRoot, 'dist', 'client'),
     exiftoolCandidates: process.env.EXIFTOOL_PATH?.trim() ? [process.env.EXIFTOOL_PATH.trim()] : ['exiftool'],
     frontendLogPath: path.join(projectRoot, 'logs', 'frontend-client.ndjson'),
-    immichApiKey,
     immichBaseUrl,
-    immichConfigured: !!immichBaseUrl && (immichApiKey.length > 0 || !!immichSharedLink),
+    immichConfigured: !!immichBaseUrl && !!immichSharedLink,
     immichSharedLink,
     immichSharedLinkUrl,
     logsRoot: path.join(projectRoot, 'logs'),
