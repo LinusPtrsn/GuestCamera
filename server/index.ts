@@ -440,6 +440,8 @@ function extensionForMimeType(mimeType: string) {
   const normalized = mimeType.toLowerCase().split(';')[0].trim();
   if (normalized === 'image/png') return '.png';
   if (normalized === 'image/webp') return '.webp';
+  if (normalized === 'image/heic') return '.heic';
+  if (normalized === 'image/heif') return '.heif';
   if (normalized === 'video/mp4') return '.mp4';
   if (normalized === 'video/quicktime') return '.mov';
   if (normalized === 'video/webm') return '.webm';
