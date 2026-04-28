@@ -357,6 +357,43 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    const originalConsole = {
+      debug: console.debug.bind(console),
+      error: console.error.bind(console),
+      info: console.info.bind(console),
+      log: console.log.bind(console),
+      warn: console.warn.bind(console)
+    };
+    const serializeConsoleArg = (value: unknown) => {
+      if (value instanceof Error) {
+        return `${value.name}: ${value.message}${value.stack ? `\n${value.stack}` : ''}`;
+      }
+      if (typeof value === 'string') {
+        return value;
+      }
+      try {
+        return JSON.stringify(value);
+      } catch {
+        return String(value);
+      }
+    };
+    const wrapConsole = (method: keyof typeof originalConsole, level: FrontendLog['level']) => {
+      console[method] = (...args: unknown[]) => {
+        originalConsole[method](...args);
+        sendFrontendLog({
+          level,
+          message: args.map(serializeConsoleArg).join(' '),
+          source: `console.${method}`,
+          stack: args.find((arg): arg is Error => arg instanceof Error)?.stack
+        });
+      };
+    };
+    wrapConsole('debug', 'info');
+    wrapConsole('log', 'info');
+    wrapConsole('info', 'info');
+    wrapConsole('warn', 'warn');
+    wrapConsole('error', 'error');
+
     const onWindowError = (event: ErrorEvent) => {
       sendFrontendLog({
         level: 'error',
@@ -397,6 +434,11 @@ export default function App() {
     window.addEventListener('pagehide', onPageHide);
     document.addEventListener('visibilitychange', onVisibilityChange);
     return () => {
+      console.debug = originalConsole.debug;
+      console.error = originalConsole.error;
+      console.info = originalConsole.info;
+      console.log = originalConsole.log;
+      console.warn = originalConsole.warn;
       window.removeEventListener('error', onWindowError);
       window.removeEventListener('unhandledrejection', onUnhandledRejection);
       window.removeEventListener('pagehide', onPageHide);

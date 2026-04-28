@@ -46,7 +46,7 @@ const projectRoot = path.resolve(__dirname, '..');
 const clientDist = path.join(projectRoot, 'dist', 'client');
 const tempRoot = path.join(os.tmpdir(), 'guest-camera');
 const logsRoot = path.resolve(projectRoot, 'logs');
-const frontendLogPath = path.join(logsRoot, 'frontend-errors.ndjson');
+const frontendLogPath = path.join(logsRoot, 'frontend-client.ndjson');
 const localEnvPath = path.join(projectRoot, '.env');
 const maxUploadBytes = Number(process.env.MAX_UPLOAD_BYTES ?? 250 * 1024 * 1024);
 const thumbnailAvailabilityCache = new Map<string, { ok: boolean; checkedAt: number }>();
@@ -456,6 +456,8 @@ function uploaderDescription(name: string) {
 
 async function writeDescriptionMetadata(filePath: string, description: string) {
   const errors: string[] = [];
+  const extension = path.extname(filePath).toLowerCase();
+  const isQuickTimeContainer = ['.mp4', '.mov', '.m4v'].includes(extension);
   for (const exiftool of exiftoolCandidates) {
     const args = [
       '-m',
@@ -464,6 +466,13 @@ async function writeDescriptionMetadata(filePath: string, description: string) {
       '-ImageDescription=' + description,
       '-XMP-dc:Description=' + description,
       '-UserComment=' + description,
+      ...(isQuickTimeContainer
+        ? [
+            '-Keys:Description=' + description,
+            '-ItemList:Description=' + description,
+            '-UserData:Description=' + description
+          ]
+        : []),
       filePath
     ];
     const result = await new Promise<{ ok: true } | { ok: false; message: string }>((resolve) => {
