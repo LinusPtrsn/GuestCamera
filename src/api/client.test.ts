@@ -62,8 +62,13 @@ describe('api client', () => {
   });
 
   it('validates gallery response shape', () => {
-    expect(isGalleryResponse({ total: 1, recent: [], albumUrl: null })).toBe(true);
+    const item = { name: 'asset', url: '/thumb', thumbnailUrl: null, createdAt: '2026-04-29T00:00:00.000Z', size: 0 };
+    expect(isGalleryResponse({ total: 1, recent: [item], albumUrl: null })).toBe(true);
     expect(isGalleryResponse({ total: 1 })).toBe(false);
+    expect(isGalleryResponse({ total: Number.NaN, recent: [], albumUrl: null })).toBe(false);
+    expect(isGalleryResponse({ total: -1, recent: [], albumUrl: null })).toBe(false);
+    expect(isGalleryResponse({ total: 1, recent: [{ ...item, size: Number.NaN }], albumUrl: null })).toBe(false);
+    expect(isGalleryResponse({ total: 1, recent: [{ ...item, thumbnailUrl: 42 }], albumUrl: null })).toBe(false);
   });
 
   it('uploads captures through XMLHttpRequest and reports progress', async () => {

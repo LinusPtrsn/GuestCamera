@@ -41,10 +41,27 @@ export function isGalleryResponse(payload: unknown): payload is GalleryResponse 
   if (!payload || typeof payload !== 'object') {
     return false;
   }
-  const candidate = payload as Partial<GalleryResponse>;
-  return typeof candidate.total === 'number'
+  const candidate = payload as Record<string, unknown>;
+  return Number.isFinite(candidate.total)
+    && typeof candidate.total === 'number'
+    && candidate.total >= 0
     && Array.isArray(candidate.recent)
+    && candidate.recent.every(isGalleryItem)
     && (typeof candidate.albumUrl === 'string' || candidate.albumUrl === null);
+}
+
+function isGalleryItem(payload: unknown) {
+  if (!payload || typeof payload !== 'object') {
+    return false;
+  }
+  const candidate = payload as Record<string, unknown>;
+  return typeof candidate.name === 'string'
+    && typeof candidate.url === 'string'
+    && (typeof candidate.thumbnailUrl === 'string' || candidate.thumbnailUrl === null)
+    && typeof candidate.createdAt === 'string'
+    && Number.isFinite(candidate.size)
+    && typeof candidate.size === 'number'
+    && candidate.size >= 0;
 }
 
 export async function fetchStatus() {

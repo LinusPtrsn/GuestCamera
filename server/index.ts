@@ -1,157 +1,42 @@
 import { createServer } from 'node:http';
 import { mkdir, stat, appendFile, rm, rename } from 'node:fs/promises';
-import { createReadStream, existsSync, readFileSync } from 'node:fs';
+import { createReadStream, existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import crypto from 'node:crypto';
+import { createServerConfig } from './config';
+import { captureFilename, normalizeCaptureMimeType, safeCapturedAt } from './services/capture-input';
 import { ImmichClient } from './services/immich-client';
 import { parseCaptureUpload } from './services/upload-staging';
 import * as metadataService from './services/metadata';
-import type { CaptureUpload } from './types';
-
-type ImmichSharedLinkAuth = {
-  key?: string;
-  slug?: string;
-};
-
-type ImmichSharedLinkResponse = {
-  assets?: ImmichAsset[];
-  album?: {
-    id: string;
-    assetCount?: number;
-    albumThumbnailAssetId?: string | null;
-  };
-};
-
-type ImmichAsset = {
-  id: string;
-  createdAt?: string;
-  fileCreatedAt?: string;
-  thumbhash?: string | null;
-};
-
-type ImmichTimeBucket = {
-  timeBucket: string;
-  count: number;
-};
-
-type ImmichTimeBucketAssets = {
-  id: string[];
-  isTrashed?: boolean[];
-  fileCreatedAt?: string[];
-  thumbhash?: Array<string | null>;
-};
+import type { CaptureUpload, ImmichSharedLinkResponse, ImmichTimeBucket, ImmichTimeBucketAssets } from './types';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const projectRoot = path.resolve(__dirname, '..');
-const clientDist = path.join(projectRoot, 'dist', 'client');
-const localEnvPath = path.join(projectRoot, '.env');
-
-loadDotEnv(localEnvPath);
-
-const tempRoot = path.resolve(process.env.UPLOAD_STAGING_DIR?.trim() || path.join(projectRoot, 'uploads'));
-const logsRoot = path.resolve(projectRoot, 'logs');
-const frontendLogPath = path.join(logsRoot, 'frontend-client.ndjson');
-const maxUploadBytes = Number(process.env.MAX_UPLOAD_BYTES ?? 250 * 1024 * 1024);
+const config = createServerConfig(projectRoot);
+const {
+  buildVersion,
+  clientDist,
+  exiftoolCandidates,
+  frontendLogPath,
+  immichApiKey,
+  immichBaseUrl,
+  immichConfigured,
+  immichSharedLink,
+  immichSharedLinkUrl,
+  logsRoot,
+  maxUploadBytes,
+  port,
+  tempRoot
+} = config;
 const thumbnailAvailabilityCache = new Map<string, { ok: boolean; checkedAt: number }>();
 const thumbnailResponseCache = new Map<string, { body: Buffer; contentType: string; checkedAt: number }>();
-const defaultBuildVersion = 'dev';
-
-const configuredExiftoolPath = process.env.EXIFTOOL_PATH?.trim();
-const exiftoolCandidates = configuredExiftoolPath ? [configuredExiftoolPath] : ['exiftool'];
-const port = Number(process.env.PORT ?? 3001);
-const buildVersion = process.env.GUEST_CAMERA_BUILD_VERSION?.trim() || defaultBuildVersion;
-const immichApiKey = process.env.IMMICH_API_KEY?.trim() ?? '';
-const immichSharedLinkUrl = process.env.IMMICH_SHARED_LINK_URL?.trim() || '';
-const immichBaseUrl = resolveImmichBaseUrl(immichSharedLinkUrl);
-const immichSharedLink = resolveSharedLinkAuth(
-  immichSharedLinkUrl || process.env.IMMICH_SHARED_LINK_KEY?.trim() || '',
-  process.env.IMMICH_SHARED_LINK_SLUG?.trim() ?? '',
-);
-const immichConfigured = !!immichBaseUrl && (immichApiKey.length > 0 || !!immichSharedLink);
 const immichClient = new ImmichClient({ apiKey: immichApiKey, baseUrl: immichBaseUrl, sharedLink: immichSharedLink });
 
 async function ensureDirectories() {
   await mkdir(tempRoot, { recursive: true });
   await mkdir(logsRoot, { recursive: true });
-}
-
-function loadDotEnv(filePath: string) {
-  if (!existsSync(filePath)) {
-    return;
-  }
-
-  const raw = readFileSync(filePath, 'utf8');
-  for (const line of raw.split(/\r?\n/)) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith('#')) {
-      continue;
-    }
-
-    const equalsIndex = trimmed.indexOf('=');
-    if (equalsIndex === -1) {
-      continue;
-    }
-
-    const key = trimmed.slice(0, equalsIndex).trim();
-    const value = trimmed.slice(equalsIndex + 1).trim().replace(/^["']|["']$/g, '');
-    if (!process.env[key]) {
-      process.env[key] = value;
-    }
-  }
-}
-
-function resolveSharedLinkAuth(urlOrKey: string, slug: string): ImmichSharedLinkAuth | null {
-  if (slug) {
-    return { slug };
-  }
-
-  if (!urlOrKey) {
-    return null;
-  }
-
-  try {
-    const parsed = new URL(urlOrKey);
-    const explicitKey = parsed.searchParams.get('key');
-    const explicitSlug = parsed.searchParams.get('slug');
-    if (explicitSlug) {
-      return { slug: explicitSlug };
-    }
-    if (explicitKey) {
-      return { key: explicitKey };
-    }
-
-    const parts = parsed.pathname.split('/').filter(Boolean);
-    const last = parts.at(-1);
-    if (parts.includes('share') && last) {
-      return { key: last };
-    }
-  } catch {
-    return { key: urlOrKey };
-  }
-
-  return { key: urlOrKey };
-}
-
-function normalizeImmichUrl(url: string) {
-  return url.replace(/\/+$/, '');
-}
-
-function resolveImmichBaseUrl(sharedLinkUrl: string) {
-  if (!sharedLinkUrl) {
-    return '';
-  }
-
-  try {
-    const parsed = new URL(sharedLinkUrl);
-    parsed.pathname = '/api';
-    parsed.search = '';
-    parsed.hash = '';
-    return normalizeImmichUrl(parsed.toString());
-  } catch {
-    return '';
-  }
 }
 
 function json(res: any, status: number, body: unknown) {
@@ -343,19 +228,6 @@ async function getImmichGallery() {
   return { total, recent, albumUrl: immichSharedLinkUrl || null };
 }
 
-function extensionForMimeType(mimeType: string) {
-  const normalized = mimeType.toLowerCase().split(';')[0].trim();
-  if (normalized === 'image/png') return '.png';
-  if (normalized === 'image/webp') return '.webp';
-  if (normalized === 'image/heic') return '.heic';
-  if (normalized === 'image/heif') return '.heif';
-  if (normalized === 'video/mp4') return '.mp4';
-  if (normalized === 'video/quicktime') return '.mov';
-  if (normalized === 'video/webm') return '.webm';
-  if (normalized.startsWith('video/')) return '.webm';
-  return '.jpg';
-}
-
 function mergeWarnings(...warnings: Array<string | undefined>) {
   return warnings
     .map((warning) => warning?.trim())
@@ -374,11 +246,23 @@ async function handleCapture(req: any, res: any) {
   }
 
   const name = String(upload.fields.get('name') ?? '').trim();
-  const mimeType = String(upload.fields.get('mimeType') ?? 'image/jpeg');
-  const capturedAt = String(upload.fields.get('capturedAt') ?? new Date().toISOString());
+  let mimeType: ReturnType<typeof normalizeCaptureMimeType>;
+  let capturedAt: string;
+  try {
+    mimeType = normalizeCaptureMimeType(String(upload.fields.get('mimeType') ?? 'image/jpeg'));
+    capturedAt = safeCapturedAt(String(upload.fields.get('capturedAt') ?? ''));
+  } catch (cause) {
+    json(res, 400, {
+      ok: false,
+      localPath: '',
+      albumName: 'Immich Shared Link',
+      message: cause instanceof Error ? cause.message : 'Upload-Metadaten sind ungültig'
+    });
+    await rm(upload.tempDir, { recursive: true, force: true }).catch(() => {});
+    return;
+  }
 
-  const extension = extensionForMimeType(mimeType);
-  const filename = `${capturedAt.replace(/[:.]/g, '-')}-${crypto.randomUUID().slice(0, 8)}${extension}`;
+  const filename = captureFilename(capturedAt, mimeType, crypto.randomUUID().slice(0, 8));
   const fullPath = path.join(upload.tempDir, filename);
   await rename(upload.filePath, fullPath);
 
