@@ -1,4 +1,4 @@
-import { Camera, RefreshCw, User, Video } from 'lucide-react';
+import { Camera, Plus, RefreshCw, Smartphone, User, Video } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { fetchGallery, fetchStatus, isGalleryLiveMessage, sendFrontendLog as sendFrontendLogEntry, uploadCapture as uploadCaptureRequest } from './api/client';
 import { ConfirmationPreview } from './components/ConfirmationPreview';
@@ -8,6 +8,10 @@ import { useFrontendLogging } from './hooks/useFrontendLogging';
 import type { CaptureIntent, GalleryResponse, MediaKind, ShotState, StatusResponse, UploadPreviewState } from './types';
 
 type Mode = 'intro' | 'main';
+type BeforeInstallPromptEvent = Event & {
+  prompt: () => Promise<void>;
+  userChoice: Promise<{ outcome: 'accepted' | 'dismissed'; platform: string }>;
+};
 
 const STORAGE_NAME_KEY = 'guest-camera:name';
 const STORAGE_NAME_SKIPPED_KEY = 'guest-camera:name-skipped';
@@ -154,6 +158,9 @@ export default function App() {
   const [captureKind, setCaptureKind] = useState<MediaKind>('photo');
   const [localUpload, setLocalUpload] = useState<UploadPreviewState | null>(null);
   const [autoUpload, setAutoUpload] = useState(false);
+  const [installPrompt, setInstallPrompt] = useState<BeforeInstallPromptEvent | null>(null);
+  const [installHint, setInstallHint] = useState('');
+  const [isInstalled, setIsInstalled] = useState(false);
 
   const recent = gallery.recent.slice(0, 3);
   const totalCount = gallery.total;
@@ -271,6 +278,30 @@ export default function App() {
         window.clearTimeout(retryId);
       }
       socket?.close();
+    };
+  }, []);
+
+  useEffect(() => {
+    const standalone = window.matchMedia('(display-mode: standalone)').matches
+      || Boolean((window.navigator as Navigator & { standalone?: boolean }).standalone);
+    setIsInstalled(standalone);
+
+    const onBeforeInstallPrompt = (event: Event) => {
+      event.preventDefault();
+      setInstallPrompt(event as BeforeInstallPromptEvent);
+      setInstallHint('');
+    };
+    const onAppInstalled = () => {
+      setInstallPrompt(null);
+      setInstallHint('App wurde hinzugefügt');
+      setIsInstalled(true);
+    };
+
+    window.addEventListener('beforeinstallprompt', onBeforeInstallPrompt);
+    window.addEventListener('appinstalled', onAppInstalled);
+    return () => {
+      window.removeEventListener('beforeinstallprompt', onBeforeInstallPrompt);
+      window.removeEventListener('appinstalled', onAppInstalled);
     };
   }, []);
 
@@ -441,6 +472,19 @@ export default function App() {
     setMode('main');
   };
 
+  const handleInstallShortcut = async () => {
+    if (installPrompt) {
+      const prompt = installPrompt;
+      setInstallPrompt(null);
+      await prompt.prompt();
+      const choice = await prompt.userChoice;
+      setInstallHint(choice.outcome === 'accepted' ? 'App wurde hinzugefügt' : '');
+      return;
+    }
+
+    setInstallHint('iPhone: Teilen öffnen und "Zum Home-Bildschirm" wählen');
+  };
+
   if (mode === 'intro') {
     return (
       <main className="shell intro-shell">
@@ -585,6 +629,19 @@ export default function App() {
         {pendingShot ? <ConfirmationPreview busy={busy} onConfirm={confirmUpload} onDiscard={discardShot} shot={pendingShot} /> : null}
 
         {error ? <p className="error">{error}</p> : null}
+
+        {!isInstalled ? (
+          <footer className="install-footer">
+            <button className="install-button" type="button" onClick={handleInstallShortcut}>
+              <span className="install-icon" aria-hidden="true">
+                <Smartphone size={20} />
+                <Plus size={13} />
+              </span>
+              <span>Zum Startbildschirm hinzufügen</span>
+            </button>
+            {installHint ? <p className="install-hint" role="status">{installHint}</p> : null}
+          </footer>
+        ) : null}
       </section>
     </main>
   );
