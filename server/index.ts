@@ -447,14 +447,24 @@ function extensionForMimeType(mimeType: string) {
   return '.jpg';
 }
 
-function isImageMimeType(mimeType: string) {
-  return mimeType.toLowerCase().startsWith('image/');
+function uploaderDescription(name: string) {
+  const trimmed = name.trim();
+  return trimmed
+    ? `Uploaded by guest camera user: ${trimmed}`
+    : 'Uploaded by anonymous guest camera user';
 }
 
 async function writeDescriptionMetadata(filePath: string, description: string) {
   const errors: string[] = [];
   for (const exiftool of exiftoolCandidates) {
-    const args = ['-overwrite_original', '-Description=' + description, filePath];
+    const args = [
+      '-overwrite_original',
+      '-Description=' + description,
+      '-ImageDescription=' + description,
+      '-XMP-dc:Description=' + description,
+      '-UserComment=' + description,
+      filePath
+    ];
     const result = await new Promise<{ ok: true } | { ok: false; message: string }>((resolve) => {
       const child = spawn(exiftool, args, { windowsHide: true });
       let stderr = '';
@@ -516,13 +526,11 @@ async function handleCapture(req: any, res: any) {
   let metadataWarning = '';
   let uploadResult: { uploaded: boolean; albumId?: string; assetId?: string; warning?: string };
   try {
-    if (isImageMimeType(mimeType)) {
-      try {
-        await writeDescriptionMetadata(fullPath, name || 'guest');
-      } catch (cause) {
-        metadataWarning = cause instanceof Error ? `Metadaten konnten nicht geschrieben werden: ${cause.message}` : 'Metadaten konnten nicht geschrieben werden';
-        console.warn(metadataWarning);
-      }
+    try {
+      await writeDescriptionMetadata(fullPath, uploaderDescription(name));
+    } catch (cause) {
+      metadataWarning = cause instanceof Error ? `Metadaten konnten nicht geschrieben werden: ${cause.message}` : 'Metadaten konnten nicht geschrieben werden';
+      console.warn(metadataWarning);
     }
     uploadResult = await uploadToImmich(fullPath, capturedAt, mimeType);
   } catch (cause) {
