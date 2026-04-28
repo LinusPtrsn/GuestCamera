@@ -35,6 +35,22 @@ const thumbnailResponseCache = new Map<string, { body: Buffer; contentType: stri
 const immichClient = new ImmichClient({ baseUrl: immichBaseUrl, sharedLink: immichSharedLink });
 const liveClients = new Set<Duplex>();
 let lastGalleryBroadcastSignature = '';
+const thumbnailAvailableCacheMs = 5 * 60 * 1000;
+const thumbnailPendingCacheMs = 1000;
+
+type GalleryItem = {
+  name: string;
+  url: string;
+  thumbnailUrl: string | null;
+  createdAt: string;
+  size: number;
+};
+
+type GalleryCandidate = {
+  id: string;
+  thumbhash?: string | null;
+  createdAt: string;
+};
 
 async function ensureDirectories() {
   await mkdir(tempRoot, { recursive: true });
@@ -97,6 +113,38 @@ function gallerySignature(gallery: Awaited<ReturnType<typeof getImmichGallery>>)
   });
 }
 
+function timestampValue(value: string) {
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? timestamp : 0;
+}
+
+async function recentGalleryItemsFromCandidates(candidates: GalleryCandidate[]) {
+  const recent: GalleryItem[] = [];
+  const sorted = [...candidates].sort((left, right) => timestampValue(right.createdAt) - timestampValue(left.createdAt));
+
+  for (const candidate of sorted) {
+    if (recent.length >= 3) {
+      break;
+    }
+
+    const immichThumbnailUrl = getImmichThumbnailUrl(candidate.id, candidate.thumbhash);
+    if (!(await hasImmichThumbnail(candidate.id, immichThumbnailUrl))) {
+      continue;
+    }
+
+    const thumbnailUrl = getPublicThumbnailUrl(candidate.id, candidate.thumbhash);
+    recent.push({
+      name: candidate.id,
+      url: thumbnailUrl,
+      thumbnailUrl,
+      createdAt: candidate.createdAt,
+      size: 0
+    });
+  }
+
+  return recent;
+}
+
 async function broadcastGalleryUpdate({ force = false } = {}) {
   try {
     const gallery = await getImmichGallery();
@@ -108,6 +156,15 @@ async function broadcastGalleryUpdate({ force = false } = {}) {
     broadcastLiveMessage({ type: 'gallery:update', gallery });
   } catch (cause) {
     console.error('Failed to broadcast gallery update', cause);
+  }
+}
+
+function scheduleGalleryBroadcasts(delays: number[]) {
+  for (const delay of delays) {
+    setTimeout(() => {
+      thumbnailAvailabilityCache.clear();
+      void broadcastGalleryUpdate({ force: delay === 0 });
+    }, delay);
   }
 }
 
@@ -211,12 +268,18 @@ function getPublicThumbnailUrl(assetId: string, thumbhash?: string | null) {
 
 async function hasImmichThumbnail(assetId: string, thumbnailUrl: string) {
   const cached = thumbnailAvailabilityCache.get(assetId);
-  if (cached && Date.now() - cached.checkedAt < 5 * 60 * 1000) {
+  const maxAge = cached?.ok ? thumbnailAvailableCacheMs : thumbnailPendingCacheMs;
+  if (cached && Date.now() - cached.checkedAt < maxAge) {
     return cached.ok;
   }
 
-  const response = await fetch(thumbnailUrl, { method: 'HEAD' });
-  const ok = response.ok && !!response.headers.get('content-type')?.startsWith('image/');
+  let ok = false;
+  try {
+    const response = await fetch(thumbnailUrl, { method: 'HEAD' });
+    ok = response.ok && !!response.headers.get('content-type')?.startsWith('image/');
+  } catch {
+    ok = false;
+  }
   thumbnailAvailabilityCache.set(assetId, { ok, checkedAt: Date.now() });
   return ok;
 }
@@ -252,12 +315,12 @@ async function getImmichGallery() {
   const sharedLink = await fetchImmichJson<ImmichSharedLinkResponse>('/shared-links/me');
   const albumId = sharedLink.album?.id;
   const total = sharedLink.album?.assetCount ?? sharedLink.assets?.length ?? 0;
-  const recent: Array<{ name: string; url: string; thumbnailUrl: string | null; createdAt: string; size: number }> = [];
+  const candidates: GalleryCandidate[] = [];
 
   if (albumId) {
     const buckets = await fetchImmichJson<ImmichTimeBucket[]>('/timeline/buckets', { albumId, order: 'desc' });
     for (const bucket of buckets) {
-      if (recent.length >= 3) {
+      if (candidates.length >= 12) {
         break;
       }
 
@@ -266,50 +329,33 @@ async function getImmichGallery() {
         timeBucket: bucket.timeBucket,
         order: 'desc'
       });
-      for (let index = 0; index < assets.id.length && recent.length < 3; index += 1) {
+      for (let index = 0; index < assets.id.length && candidates.length < 12; index += 1) {
         if (assets.isTrashed?.[index]) {
           continue;
         }
 
-        const id = assets.id[index];
-        const immichThumbnailUrl = getImmichThumbnailUrl(id, assets.thumbhash?.[index]);
-        if (!(await hasImmichThumbnail(id, immichThumbnailUrl))) {
-          continue;
-        }
-
-        const thumbnailUrl = getPublicThumbnailUrl(id, assets.thumbhash?.[index]);
-        recent.push({
-          name: id,
-          url: thumbnailUrl,
-          thumbnailUrl,
-          createdAt: assets.fileCreatedAt?.[index] ?? bucket.timeBucket,
-          size: 0
+        candidates.push({
+          id: assets.id[index],
+          thumbhash: assets.thumbhash?.[index],
+          createdAt: assets.fileCreatedAt?.[index] ?? bucket.timeBucket
         });
       }
     }
   } else {
     for (const asset of sharedLink.assets ?? []) {
-      if (recent.length >= 3) {
+      if (candidates.length >= 12) {
         break;
       }
 
-      const immichThumbnailUrl = getImmichThumbnailUrl(asset.id, asset.thumbhash);
-      if (!(await hasImmichThumbnail(asset.id, immichThumbnailUrl))) {
-        continue;
-      }
-
-      const thumbnailUrl = getPublicThumbnailUrl(asset.id, asset.thumbhash);
-      recent.push({
-        name: asset.id,
-        url: thumbnailUrl,
-        thumbnailUrl,
+      candidates.push({
+        id: asset.id,
+        thumbhash: asset.thumbhash,
         createdAt: asset.fileCreatedAt ?? asset.createdAt ?? '',
-        size: 0
       });
     }
   }
 
-  return { total, recent, albumUrl: immichSharedLinkUrl || null };
+  return { total, recent: await recentGalleryItemsFromCandidates(candidates), albumUrl: immichSharedLinkUrl || null };
 }
 
 function mergeWarnings(...warnings: Array<string | undefined>) {
@@ -379,8 +425,7 @@ async function handleCapture(req: any, res: any) {
     ...uploadResult,
     warning: mergeWarnings(metadataWarning, uploadResult.warning) || undefined
   });
-  void broadcastGalleryUpdate({ force: true });
-  setTimeout(() => void broadcastGalleryUpdate(), 2500);
+  scheduleGalleryBroadcasts([0, 1000, 2500, 5000, 10000]);
 }
 
 async function serveStatic(req: any, res: any) {

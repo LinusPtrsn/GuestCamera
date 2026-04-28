@@ -8,47 +8,6 @@
   "background_color": "#0b1016",
   "theme_color": "#2f8f58",
   "orientation": "portrait",
-  "shortcuts": [
-    {
-      "name": "Foto aufnehmen",
-      "short_name": "Foto",
-      "description": "Direkt die Kamera für ein Foto öffnen.",
-      "url": "/?shortcut=photo",
-      "icons": [
-        {
-          "src": "/icons/guest-camera-icon-192.png",
-          "sizes": "192x192",
-          "type": "image/png"
-        }
-      ]
-    },
-    {
-      "name": "Video aufnehmen",
-      "short_name": "Video",
-      "description": "Direkt die Kamera für ein Video öffnen.",
-      "url": "/?shortcut=video",
-      "icons": [
-        {
-          "src": "/icons/guest-camera-icon-192.png",
-          "sizes": "192x192",
-          "type": "image/png"
-        }
-      ]
-    },
-    {
-      "name": "Album öffnen",
-      "short_name": "Album",
-      "description": "Das gemeinsame Album öffnen.",
-      "url": "/?shortcut=album",
-      "icons": [
-        {
-          "src": "/icons/guest-camera-icon-192.png",
-          "sizes": "192x192",
-          "type": "image/png"
-        }
-      ]
-    }
-  ],
   "icons": [
     {
       "src": "/icons/guest-camera-icon.svg",

@@ -8,7 +8,6 @@ import { useFrontendLogging } from './hooks/useFrontendLogging';
 import type { CaptureIntent, GalleryResponse, MediaKind, ShotState, StatusResponse, UploadPreviewState } from './types';
 
 type Mode = 'intro' | 'main';
-type LaunchShortcut = 'photo' | 'video' | 'album';
 type BeforeInstallPromptEvent = Event & {
   prompt: () => Promise<void>;
   userChoice: Promise<{ outcome: 'accepted' | 'dismissed'; platform: string }>;
@@ -16,20 +15,6 @@ type BeforeInstallPromptEvent = Event & {
 
 const STORAGE_NAME_KEY = 'guest-camera:name';
 const STORAGE_NAME_SKIPPED_KEY = 'guest-camera:name-skipped';
-
-function readLaunchShortcut(): LaunchShortcut | null {
-  const value = new URLSearchParams(window.location.search).get('shortcut');
-  return value === 'photo' || value === 'video' || value === 'album' ? value : null;
-}
-
-function clearLaunchShortcut() {
-  const url = new URL(window.location.href);
-  if (!url.searchParams.has('shortcut')) {
-    return;
-  }
-  url.searchParams.delete('shortcut');
-  window.history.replaceState(null, '', `${url.pathname}${url.search}${url.hash}`);
-}
 
 function extensionForMedia(kind: MediaKind, mimeType: string) {
   if (kind === 'video') {
@@ -154,9 +139,6 @@ export default function App() {
     }
   });
   const [mode, setMode] = useState<Mode>(() => {
-    if (readLaunchShortcut()) {
-      return 'main';
-    }
     try {
       const hasName = window.localStorage.getItem(STORAGE_NAME_KEY);
       const hasSkipped = window.localStorage.getItem(STORAGE_NAME_SKIPPED_KEY);
@@ -179,7 +161,6 @@ export default function App() {
   const [installPrompt, setInstallPrompt] = useState<BeforeInstallPromptEvent | null>(null);
   const [installHint, setInstallHint] = useState('');
   const [isInstalled, setIsInstalled] = useState(false);
-  const [launchShortcut, setLaunchShortcut] = useState<LaunchShortcut | null>(() => readLaunchShortcut());
 
   const recent = gallery.recent.slice(0, 3);
   const totalCount = gallery.total;
@@ -364,35 +345,6 @@ export default function App() {
     setMessage('Datei wird ausgewählt');
     libraryInputRef.current?.click();
   };
-
-  useEffect(() => {
-    if (!launchShortcut || mode !== 'main') {
-      return;
-    }
-    if (launchShortcut === 'album' && galleryLoading) {
-      return;
-    }
-
-    const shortcut = launchShortcut;
-    setLaunchShortcut(null);
-    clearLaunchShortcut();
-
-    window.setTimeout(() => {
-      if (shortcut === 'photo') {
-        openNativeCamera();
-        return;
-      }
-      if (shortcut === 'video') {
-        openNativeVideo();
-        return;
-      }
-      if (gallery.albumUrl) {
-        window.location.href = gallery.albumUrl;
-        return;
-      }
-      setError('Album-Link ist noch nicht verfügbar');
-    }, 120);
-  }, [gallery.albumUrl, galleryLoading, launchShortcut, mode]);
 
   const handleNativeCapture = async (event: React.ChangeEvent<HTMLInputElement>, intent: CaptureIntent) => {
     const file = event.target.files?.[0];
