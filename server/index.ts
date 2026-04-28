@@ -55,10 +55,12 @@ const exiftoolCandidates = [
   process.env.EXIFTOOL_PATH?.trim(),
   'exiftool'
 ].filter(Boolean) as string[];
+const defaultBuildVersion = 'dev';
 
 loadDotEnv(localEnvPath);
 
 const port = Number(process.env.PORT ?? 3001);
+const buildVersion = process.env.GUEST_CAMERA_BUILD_VERSION?.trim() || defaultBuildVersion;
 const immichApiKey = process.env.IMMICH_API_KEY?.trim() ?? '';
 const immichSharedLinkUrl = process.env.IMMICH_SHARED_LINK_URL?.trim() || '';
 const immichBaseUrl = resolveImmichBaseUrl(immichSharedLinkUrl);
@@ -546,7 +548,7 @@ async function handleCapture(req: any, res: any) {
 
 async function serveStatic(req: any, res: any) {
   if ((req.url === '/health' || req.url === '/api/health') && req.method === 'GET') {
-    json(res, 200, { ok: true });
+    json(res, 200, { ok: true, version: buildVersion });
     return;
   }
 
@@ -555,7 +557,8 @@ async function serveStatic(req: any, res: any) {
       immichConfigured,
       sharedLinkConfigured: !!immichSharedLink,
       storageRoot: '',
-      apiBaseUrl: immichBaseUrl
+      apiBaseUrl: immichBaseUrl,
+      buildVersion
     });
     return;
   }

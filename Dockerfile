@@ -24,6 +24,11 @@ COPY --from=build /app/dist ./dist
 COPY --from=build /app/server ./server
 COPY --from=build /app/tsconfig.json ./tsconfig.json
 
+ARG FRONTEND_BUILD_VERSION=dev
+ARG BACKEND_BUILD_VERSION=dev
+RUN printf '{\n  "version": "%s"\n}\n' "${FRONTEND_BUILD_VERSION}" > ./dist/client/build-info.json
+ENV GUEST_CAMERA_BUILD_VERSION=${BACKEND_BUILD_VERSION}
+
 EXPOSE 3001
 
 CMD ["npm", "run", "start"]

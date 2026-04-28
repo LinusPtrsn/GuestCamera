@@ -296,6 +296,37 @@ a {
   margin-bottom: 18px;
 }
 
+.build-badge {
+  width: fit-content;
+  max-width: 100%;
+  margin: 0 0 8px auto;
+  padding: 5px 8px;
+  border: 1px solid rgba(158, 194, 168, 0.3);
+  border-radius: 8px;
+  color: #b8d6c0;
+  background: rgba(12, 22, 18, 0.7);
+  font-size: 0.72rem;
+  font-weight: 700;
+  line-height: 1.1;
+}
+
+.build-badge.is-warning {
+  color: #ffe8ba;
+  border-color: rgba(245, 158, 11, 0.58);
+  background: rgba(80, 42, 10, 0.76);
+}
+
+.build-warning {
+  margin: 0 0 8px;
+  padding: 8px 10px;
+  border: 1px solid rgba(245, 158, 11, 0.42);
+  border-radius: 8px;
+  color: #ffe8ba;
+  background: rgba(80, 42, 10, 0.64);
+  font-size: 0.82rem;
+  line-height: 1.35;
+}
+
 .gallery-grid {
   width: 100%;
   aspect-ratio: 1 / 1;

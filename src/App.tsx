@@ -24,6 +24,7 @@ type StatusResponse = {
   sharedLinkConfigured: boolean;
   storageRoot: string;
   apiBaseUrl: string;
+  buildVersion: string;
 };
 
 type GalleryResponse = {
@@ -37,6 +38,10 @@ type FrontendLog = {
   message: string;
   source: string;
   stack?: string;
+};
+
+type BuildInfoResponse = {
+  version?: unknown;
 };
 
 type Mode = 'intro' | 'main';
@@ -218,6 +223,7 @@ export default function App() {
     }
   });
   const [status, setStatus] = useState<StatusResponse | null>(null);
+  const [frontendBuildVersion, setFrontendBuildVersion] = useState<string | null>(null);
   const [gallery, setGallery] = useState<GalleryResponse>({ total: 0, recent: [], albumUrl: null });
   const [galleryLoading, setGalleryLoading] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -233,6 +239,15 @@ export default function App() {
   const extraCount = Math.max(totalCount - 3, 0);
   const albumLink = gallery.albumUrl || '#';
   const displayName = name.trim() || 'Name';
+  const normalizedFrontendBuildVersion = frontendBuildVersion?.trim() || 'dev';
+  const normalizedBackendBuildVersion = status?.buildVersion?.trim() || null;
+  const hasBuildMismatch = normalizedBackendBuildVersion !== null && normalizedBackendBuildVersion !== normalizedFrontendBuildVersion;
+  const buildBadgeLabel = hasBuildMismatch
+    ? `FE ${normalizedFrontendBuildVersion} / BE ${normalizedBackendBuildVersion}`
+    : normalizedFrontendBuildVersion;
+  const buildBadgeTitle = hasBuildMismatch
+    ? `Frontend build ${normalizedFrontendBuildVersion} unterscheidet sich vom Backend build ${normalizedBackendBuildVersion}.`
+    : `Build ${buildBadgeLabel}`;
   const sendFrontendLog = (entry: FrontendLog) => {
     const payload = JSON.stringify({
       ...entry,
@@ -288,13 +303,26 @@ export default function App() {
 
   useEffect(() => {
     let active = true;
-    void fetch('/api/status')
-      .then((res) => res.json())
-      .then((data: StatusResponse) => {
-        if (active) setStatus(data);
+    void Promise.all([
+      fetch('/build-info.json', { cache: 'no-store' })
+        .then(async (res) => {
+          if (!res.ok) throw new Error(`Build-Info konnte nicht geladen werden (${res.status})`);
+          return (await res.json()) as BuildInfoResponse;
+        })
+        .catch(() => ({ version: null })),
+      fetch('/api/status').then((res) => res.json() as Promise<StatusResponse>)
+    ])
+      .then(([buildInfo, data]) => {
+        if (!active) return;
+        setFrontendBuildVersion(typeof buildInfo.version === 'string' ? buildInfo.version : null);
+        setStatus(data);
       })
       .catch(() => {
-        if (active) setStatus(null);
+        if (!active) {
+          return;
+        }
+        setFrontendBuildVersion(null);
+        setStatus(null);
       });
     void refreshGallery().catch(() => {});
     return () => {
@@ -579,6 +607,18 @@ export default function App() {
         </div>
 
         <section className="gallery-block">
+          <div
+            className={`build-badge ${hasBuildMismatch ? 'is-warning' : ''}`}
+            title={buildBadgeTitle}
+            aria-label={hasBuildMismatch ? 'Frontend und Backend Build-Version unterscheiden sich' : `Build ${buildBadgeLabel}`}
+          >
+            {buildBadgeLabel}
+          </div>
+          {hasBuildMismatch ? (
+            <p className="build-warning" role="status">
+              Neue Version wird geladen. Bitte aktualisiere die Seite, falls etwas nicht reagiert.
+            </p>
+          ) : null}
           <a className="gallery-grid" href={albumLink} target="_blank" rel="noreferrer" aria-label="Gesamtes Album öffnen">
             {[0, 1, 2].map((slot) => {
               if (slot === 0 && localUpload) {
