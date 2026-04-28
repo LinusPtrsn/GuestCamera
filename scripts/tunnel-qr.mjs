@@ -8,12 +8,13 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const projectRoot = path.resolve(__dirname, '..');
 const cloudflaredPath = process.env.CLOUDFLARED_PATH?.trim() || 'cloudflared';
+const tunnelTargetUrl = process.env.GUEST_CAMERA_TUNNEL_URL?.trim() || process.env.TUNNEL_URL?.trim() || 'http://127.0.0.1:5173';
 const qrOutputPath = path.join(projectRoot, 'guest-camera-tunnel-qr-latest.png');
 const cloudflaredLogPath = path.join(projectRoot, 'logs', 'cloudflared.latest.log');
 
 await fs.mkdir(path.dirname(cloudflaredLogPath), { recursive: true });
 
-const child = spawn(cloudflaredPath, ['tunnel', '--url', 'http://127.0.0.1:5173'], {
+const child = spawn(cloudflaredPath, ['tunnel', '--url', tunnelTargetUrl], {
   cwd: projectRoot,
   windowsHide: true,
   stdio: ['ignore', 'pipe', 'pipe']
@@ -25,11 +26,16 @@ const extractUrl = (text) => {
   return match?.[0] ?? '';
 };
 
-child.stdout.on('data', async (chunk) => {
+async function handleCloudflaredOutput(chunk, stream) {
   const text = chunk.toString();
   await fs.appendFile(cloudflaredLogPath, text, 'utf8');
-  tunnelUrl ||= extractUrl(text);
-  if (tunnelUrl) {
+  if (stream === 'stderr') {
+    process.stderr.write(text);
+  }
+
+  const nextTunnelUrl = tunnelUrl || extractUrl(text);
+  if (nextTunnelUrl && nextTunnelUrl !== tunnelUrl) {
+    tunnelUrl = nextTunnelUrl;
     const png = await QRCode.toBuffer(tunnelUrl, {
       type: 'png',
       margin: 4,
@@ -39,12 +45,23 @@ child.stdout.on('data', async (chunk) => {
     await fs.writeFile(qrOutputPath, png);
     process.stdout.write(`Tunnel: ${tunnelUrl}\nQR: ${qrOutputPath}\n`);
   }
+}
+
+child.stdout.on('data', (chunk) => {
+  void handleCloudflaredOutput(chunk, 'stdout');
 });
 
-child.stderr.on('data', async (chunk) => {
-  const text = chunk.toString();
-  await fs.appendFile(cloudflaredLogPath, text, 'utf8');
-  process.stderr.write(text);
+child.stderr.on('data', (chunk) => {
+  void handleCloudflaredOutput(chunk, 'stderr');
+});
+
+child.on('error', (cause) => {
+  if (cause.code === 'ENOENT') {
+    process.stderr.write('cloudflared was not found. Install it and make sure it is available in PATH, or set CLOUDFLARED_PATH.\n');
+    process.exit(127);
+  }
+  process.stderr.write(`${cause.message}\n`);
+  process.exit(1);
 });
 
 child.on('exit', (code) => {
