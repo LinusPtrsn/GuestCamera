@@ -248,6 +248,13 @@ export default function App() {
   const buildBadgeTitle = hasBuildMismatch
     ? `Frontend build ${normalizedFrontendBuildVersion} unterscheidet sich vom Backend build ${normalizedBackendBuildVersion}.`
     : `Build ${buildBadgeLabel}`;
+  const handleRefreshAction = () => {
+    if (hasBuildMismatch) {
+      window.location.reload();
+      return;
+    }
+    void refreshGallery({ clearLocalUpload: true });
+  };
   const sendFrontendLog = (entry: FrontendLog) => {
     const payload = JSON.stringify({
       ...entry,
@@ -589,7 +596,21 @@ export default function App() {
           </div>
           <div className="title-actions">
             <div className="status-controls">
-              <button className="icon-button" type="button" onClick={() => void refreshGallery({ clearLocalUpload: true })} disabled={galleryLoading || busy} aria-label="Vorschau aktualisieren">
+              <span
+                className={`build-watermark ${hasBuildMismatch ? 'is-warning' : ''}`}
+                title={buildBadgeTitle}
+                aria-label={hasBuildMismatch ? 'Frontend und Backend Build-Version unterscheiden sich' : `Build ${buildBadgeLabel}`}
+              >
+                {buildBadgeLabel}
+              </span>
+              <button
+                className={`icon-button ${hasBuildMismatch ? 'is-super-refresh' : ''}`}
+                type="button"
+                onClick={handleRefreshAction}
+                disabled={!hasBuildMismatch && (galleryLoading || busy)}
+                aria-label={hasBuildMismatch ? 'Neue Version laden' : 'Vorschau aktualisieren'}
+                title={hasBuildMismatch ? 'Neue Version laden' : 'Vorschau aktualisieren'}
+              >
                 <RefreshCw size={19} />
               </button>
               <div className="pill">{message}</div>
@@ -607,18 +628,6 @@ export default function App() {
         </div>
 
         <section className="gallery-block">
-          <div
-            className={`build-badge ${hasBuildMismatch ? 'is-warning' : ''}`}
-            title={buildBadgeTitle}
-            aria-label={hasBuildMismatch ? 'Frontend und Backend Build-Version unterscheiden sich' : `Build ${buildBadgeLabel}`}
-          >
-            {buildBadgeLabel}
-          </div>
-          {hasBuildMismatch ? (
-            <p className="build-warning" role="status">
-              Neue Version wird geladen. Bitte aktualisiere die Seite, falls etwas nicht reagiert.
-            </p>
-          ) : null}
           <a className="gallery-grid" href={albumLink} target="_blank" rel="noreferrer" aria-label="Gesamtes Album öffnen">
             {[0, 1, 2].map((slot) => {
               if (slot === 0 && localUpload) {

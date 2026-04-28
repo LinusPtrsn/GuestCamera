@@ -60,6 +60,7 @@ a {
 }
 
 .status-controls {
+  position: relative;
   min-height: 48px;
   border: 1px solid #355042;
   border-radius: 14px;
@@ -68,6 +69,32 @@ a {
   gap: 8px;
   padding: 4px;
   background: #102018;
+}
+
+.build-watermark {
+  position: absolute;
+  left: 8px;
+  top: 50%;
+  max-width: 112px;
+  transform: translateY(-50%);
+  color: rgba(184, 214, 192, 0.2);
+  font-size: 0.76rem;
+  font-weight: 800;
+  line-height: 1;
+  pointer-events: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.build-watermark.is-warning {
+  color: rgba(255, 210, 128, 0.45);
+}
+
+.icon-button.is-super-refresh {
+  border-color: rgba(245, 158, 11, 0.68);
+  color: #ffe8ba;
+  background: rgba(80, 42, 10, 0.72);
 }
 
 .welcome-title {
@@ -294,37 +321,6 @@ a {
 .gallery-block {
   margin-top: 8px;
   margin-bottom: 18px;
-}
-
-.build-badge {
-  width: fit-content;
-  max-width: 100%;
-  margin: 0 0 8px auto;
-  padding: 5px 8px;
-  border: 1px solid rgba(158, 194, 168, 0.3);
-  border-radius: 8px;
-  color: #b8d6c0;
-  background: rgba(12, 22, 18, 0.7);
-  font-size: 0.72rem;
-  font-weight: 700;
-  line-height: 1.1;
-}
-
-.build-badge.is-warning {
-  color: #ffe8ba;
-  border-color: rgba(245, 158, 11, 0.58);
-  background: rgba(80, 42, 10, 0.76);
-}
-
-.build-warning {
-  margin: 0 0 8px;
-  padding: 8px 10px;
-  border: 1px solid rgba(245, 158, 11, 0.42);
-  border-radius: 8px;
-  color: #ffe8ba;
-  background: rgba(80, 42, 10, 0.64);
-  font-size: 0.82rem;
-  line-height: 1.35;
 }
 
 .gallery-grid {
