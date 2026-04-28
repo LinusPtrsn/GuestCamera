@@ -20,6 +20,7 @@ const thumbnailRoot = path.resolve(storageRoot, '.thumbnails');
 const logsRoot = path.resolve(projectRoot, 'logs');
 const frontendLogPath = path.join(logsRoot, 'frontend-errors.ndjson');
 const localEnvPath = path.join(projectRoot, '.env');
+const thumbnailScriptPath = path.join(projectRoot, 'scripts', 'create-thumbnail.ps1');
 const imageFilePattern = /\.(jpg|jpeg|png|webp)$/i;
 const exiftoolCandidates = [
   process.env.EXIFTOOL_PATH?.trim(),
@@ -197,36 +198,12 @@ function thumbnailPathFor(filePath: string) {
 
 async function ensureThumbnail(sourcePath: string, thumbnailPath: string) {
   await mkdir(path.dirname(thumbnailPath), { recursive: true });
-  const script = `
-Add-Type -AssemblyName System.Drawing
-$source = [System.Drawing.Image]::FromFile($args[0])
-try {
-  $max = 420
-  $ratio = [Math]::Min($max / $source.Width, $max / $source.Height)
-  if ($ratio -gt 1) { $ratio = 1 }
-  $width = [Math]::Max(1, [int][Math]::Round($source.Width * $ratio))
-  $height = [Math]::Max(1, [int][Math]::Round($source.Height * $ratio))
-  $bitmap = New-Object System.Drawing.Bitmap $width, $height
-  try {
-    $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
-    try {
-      $graphics.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
-      $graphics.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::HighQuality
-      $graphics.PixelOffsetMode = [System.Drawing.Drawing2D.PixelOffsetMode]::HighQuality
-      $graphics.DrawImage($source, 0, 0, $width, $height)
-      $bitmap.Save($args[1], [System.Drawing.Imaging.ImageFormat]::Jpeg)
-    } finally {
-      $graphics.Dispose()
-    }
-  } finally {
-    $bitmap.Dispose()
-  }
-} finally {
-  $source.Dispose()
-}
-`;
   await new Promise<void>((resolve, reject) => {
-    const child = spawn('powershell.exe', ['-NoProfile', '-Command', script, sourcePath, thumbnailPath], { windowsHide: true });
+    const child = spawn(
+      'powershell.exe',
+      ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', thumbnailScriptPath, sourcePath, thumbnailPath],
+      { windowsHide: true }
+    );
     let stderr = '';
     child.stderr.on('data', (chunk) => {
       stderr += chunk.toString();
