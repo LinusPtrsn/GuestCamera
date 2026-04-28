@@ -1,5 +1,5 @@
-import { Camera, CameraOff, ChevronRight, User } from 'lucide-react';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { Camera, User, Video } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
 
 type CaptureResponse = {
   ok: boolean;
@@ -39,28 +39,33 @@ type FrontendLog = {
 };
 
 type Mode = 'intro' | 'main';
+type MediaKind = 'photo' | 'video';
+type ShotState = {
+  kind: MediaKind;
+  blob: Blob;
+  previewUrl: string;
+  capturedAt: string;
+};
 
 export default function App() {
-  const videoRef = useRef<HTMLVideoElement | null>(null);
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const streamRef = useRef<MediaStream | null>(null);
+  const photoInputRef = useRef<HTMLInputElement | null>(null);
+  const videoInputRef = useRef<HTMLInputElement | null>(null);
+  const libraryInputRef = useRef<HTMLInputElement | null>(null);
 
   const [mode, setMode] = useState<Mode>('intro');
   const [name, setName] = useState('');
   const [status, setStatus] = useState<StatusResponse | null>(null);
   const [gallery, setGallery] = useState<GalleryResponse>({ total: 0, recent: [], albumUrl: null });
-  const [cameraActive, setCameraActive] = useState(false);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('Bereit');
   const [error, setError] = useState('');
-  const [previewUrl, setPreviewUrl] = useState('');
+  const [pendingShot, setPendingShot] = useState<ShotState | null>(null);
+  const [captureKind, setCaptureKind] = useState<MediaKind>('photo');
 
-  const canShoot = useMemo(() => !busy && cameraActive, [busy, cameraActive]);
   const recent = gallery.recent.slice(0, 3);
   const totalCount = gallery.total;
   const extraCount = Math.max(totalCount - 3, 0);
   const albumLink = gallery.albumUrl || '#';
-
   const sendFrontendLog = (entry: FrontendLog) => {
     const payload = JSON.stringify({
       ...entry,
@@ -124,90 +129,79 @@ export default function App() {
     return () => {
       window.removeEventListener('error', onWindowError);
       window.removeEventListener('unhandledrejection', onUnhandledRejection);
-      stopCamera();
-      if (previewUrl) URL.revokeObjectURL(previewUrl);
+      if (pendingShot?.previewUrl) URL.revokeObjectURL(pendingShot.previewUrl);
     };
-  }, [previewUrl]);
+  }, [pendingShot]);
 
-  const startCamera = async () => {
+  const openNativeCamera = () => {
+    setCaptureKind('photo');
     setError('');
-    setMessage('Kamera wird gestartet');
+    setMessage('Kamera wird geöffnet');
+    photoInputRef.current?.click();
+  };
+
+  const openNativeVideo = () => {
+    setCaptureKind('video');
+    setError('');
+    setMessage('Videokamera wird geöffnet');
+    videoInputRef.current?.click();
+  };
+
+  const openDevicePicker = () => {
+    setError('');
+    setMessage('Datei wird ausgewählt');
+    libraryInputRef.current?.click();
+  };
+
+  const handleNativeCapture = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) {
+      setMessage('Bereit');
+      return;
+    }
+
     try {
-      const mediaDevices = navigator.mediaDevices;
-      if (!mediaDevices?.getUserMedia) throw new Error('Kamera ist in diesem Browser nicht verfuegbar');
-      const stream = await mediaDevices.getUserMedia({
-        audio: false,
-        video: { facingMode: 'user', width: { ideal: 1920 }, height: { ideal: 1080 } }
-      });
-      streamRef.current = stream;
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        await videoRef.current.play();
-      }
-      setCameraActive(true);
-      setMessage('Kamera aktiv');
+      if (pendingShot?.previewUrl) URL.revokeObjectURL(pendingShot.previewUrl);
+      const previewUrl = URL.createObjectURL(file);
+      const kind: MediaKind = file.type.startsWith('video/') || captureKind === 'video' ? 'video' : 'photo';
+      setPendingShot({ kind, blob: file, previewUrl, capturedAt: new Date().toISOString() });
+      setMessage(kind === 'video' ? 'Video aufgenommen' : 'Foto aufgenommen');
+      setError('');
     } catch (cause) {
-      setCameraActive(false);
-      const text = cause instanceof Error ? cause.message : 'Kamerazugriff fehlgeschlagen';
-      setMessage('Kamera blockiert');
+      const text = cause instanceof Error ? cause.message : 'Bild konnte nicht geladen werden';
       setError(text);
       sendFrontendLog({
         level: 'error',
         message: text,
-        source: 'startCamera',
+        source: 'nativeCapture',
         stack: cause instanceof Error ? cause.stack : undefined
       });
+      setMessage('Fehler beim Öffnen');
     }
   };
 
-  const stopCamera = () => {
-    streamRef.current?.getTracks().forEach((track) => track.stop());
-    streamRef.current = null;
-    if (videoRef.current) videoRef.current.srcObject = null;
-    setCameraActive(false);
-  };
-
-  const capture = async () => {
-    if (!videoRef.current || !canvasRef.current) return;
+  const confirmUpload = async () => {
+    if (!pendingShot) return;
     setBusy(true);
     setError('');
-    setMessage('Foto wird aufgenommen');
+    setMessage(pendingShot.kind === 'video' ? 'Video-Upload läuft' : 'Upload läuft');
     try {
-      const video = videoRef.current;
-      const canvas = canvasRef.current;
-      const width = video.videoWidth || 1280;
-      const height = video.videoHeight || 720;
-      canvas.width = width;
-      canvas.height = height;
-      const context = canvas.getContext('2d');
-      if (!context) throw new Error('Canvas-Kontext fehlt');
-      context.drawImage(video, 0, 0, width, height);
-      const blob = await new Promise<Blob>((resolve, reject) => {
-        canvas.toBlob((result) => {
-          if (!result) {
-            reject(new Error('Bild konnte nicht erzeugt werden'));
-            return;
-          }
-          resolve(result);
-        }, 'image/jpeg', 0.95);
-      });
-
-      if (previewUrl) URL.revokeObjectURL(previewUrl);
-      setPreviewUrl(URL.createObjectURL(blob));
-
       const form = new FormData();
       form.append('name', name.trim());
-      form.append('mimeType', 'image/jpeg');
-      form.append('capturedAt', new Date().toISOString());
-      form.append('photo', blob, `guest-camera-${Date.now()}.jpg`);
+      form.append('mimeType', pendingShot.blob.type || 'image/jpeg');
+      form.append('capturedAt', pendingShot.capturedAt);
+      form.append('photo', pendingShot.blob, `guest-camera-${Date.now()}.jpg`);
 
       const response = await fetch('/api/capture', { method: 'POST', body: form });
       const payload = (await response.json()) as CaptureResponse;
       if (!response.ok) throw new Error(payload.message ?? 'Upload fehlgeschlagen');
 
-      setMessage(payload.uploaded ? 'Foto hochgeladen' : 'Foto lokal gespeichert');
+      setMessage(payload.uploaded ? (pendingShot.kind === 'video' ? 'Video hochgeladen' : 'Foto hochgeladen') : 'Lokal gespeichert');
       if (payload.warning) setError(payload.warning);
       await refreshGallery();
+      if (pendingShot.previewUrl) URL.revokeObjectURL(pendingShot.previewUrl);
+      setPendingShot(null);
     } catch (cause) {
       const text = cause instanceof Error ? cause.message : 'Unbekannter Fehler';
       setError(text);
@@ -217,10 +211,17 @@ export default function App() {
         source: 'capture',
         stack: cause instanceof Error ? cause.stack : undefined
       });
-      setMessage('Fehler beim Schiessen');
+      setMessage('Upload fehlgeschlagen');
     } finally {
       setBusy(false);
     }
+  };
+
+  const discardShot = () => {
+    if (pendingShot?.previewUrl) URL.revokeObjectURL(pendingShot.previewUrl);
+    setPendingShot(null);
+    setMessage('Bereit');
+    setError('');
   };
 
   if (mode === 'intro') {
@@ -232,7 +233,7 @@ export default function App() {
               <User />
             </span>
             <div>
-              <h1>Guest Camera</h1>
+              <h1>Frühlingsfest Gästekamera</h1>
               <p>Name ist optional</p>
             </div>
           </div>
@@ -267,8 +268,8 @@ export default function App() {
               <Camera />
             </span>
             <div>
-              <h1>Guest Camera</h1>
-              <p>{status?.sharedLinkConfigured ? 'Immich Shared Link' : 'Immich'}</p>
+              <h1>Frühlingsfest Gästekamera</h1>
+              <p>Für das Fest</p>
             </div>
           </div>
           <div className="pill">{message}</div>
@@ -291,31 +292,85 @@ export default function App() {
           </a>
         </section>
 
-        <button
-          className="shot-button"
-          type="button"
-          onClick={canShoot ? capture : startCamera}
-          disabled={busy}
-          aria-label={cameraActive ? 'Foto aufnehmen' : 'Kamera starten und Foto aufnehmen'}
-        >
-          {cameraActive ? <CameraOff size={22} /> : <Camera size={22} />}
-          <span>Foto aufnehmen</span>
-          <ChevronRight size={18} />
-        </button>
+        {!pendingShot ? (
+          <div className="shot-stack">
+            <div className="split-shots">
+              <button className="shot-button shot-button-secondary" type="button" onClick={openNativeVideo} disabled={busy} aria-label="Video aufnehmen">
+                <Video size={20} />
+                <span>Video aufnehmen</span>
+              </button>
+              <button className="shot-button shot-button-primary" type="button" onClick={openNativeCamera} disabled={busy} aria-label="Kamera öffnen">
+                <Camera size={22} />
+                <span>Foto aufnehmen</span>
+              </button>
+            </div>
+            <button className="native-fallback" type="button" onClick={openDevicePicker} disabled={busy}>
+              Datei vom Gerät auswählen
+            </button>
+          </div>
+        ) : null}
+
+        <input
+          ref={photoInputRef}
+          className="hidden-input"
+          type="file"
+          accept="image/*"
+          capture="environment"
+          onChange={handleNativeCapture}
+          aria-hidden="true"
+          tabIndex={-1}
+        />
+
+        <input
+          ref={videoInputRef}
+          className="hidden-input"
+          type="file"
+          accept="video/*"
+          capture="camcorder"
+          onChange={handleNativeCapture}
+          aria-hidden="true"
+          tabIndex={-1}
+        />
+
+        <input
+          ref={libraryInputRef}
+          className="hidden-input"
+          type="file"
+          accept="image/*,video/*"
+          onChange={handleNativeCapture}
+          aria-hidden="true"
+          tabIndex={-1}
+        />
 
         <div className="status-row">
           <button className="text-button" type="button" onClick={() => setMode('intro')}>
             Namen ändern
           </button>
-          <button className="text-button" type="button" onClick={stopCamera}>
-            Kamera stoppen
-          </button>
         </div>
 
-        <video ref={videoRef} className="video" autoPlay playsInline muted />
-        <canvas ref={canvasRef} className="hidden-canvas" />
+        {pendingShot ? (
+          <div className="confirm-overlay" role="dialog" aria-modal="true" aria-label={pendingShot.kind === 'video' ? 'Video bestätigen' : 'Foto bestätigen'}>
+            <div className="confirm-shell">
+              {pendingShot.kind === 'video' ? (
+                <video className="preview-media confirm-media" src={pendingShot.previewUrl} controls playsInline autoPlay muted />
+              ) : (
+                <img className="preview-image confirm-image" src={pendingShot.previewUrl} alt="Aufgenommenes Foto" />
+              )}
+              <div className="confirm-actions">
+                <button className="button secondary preview-secondary" type="button" onClick={discardShot} disabled={busy}>
+                  Nicht jetzt
+                </button>
+                <button className="button primary preview-primary" type="button" onClick={confirmUpload} disabled={busy}>
+                  {pendingShot.kind === 'video' ? 'Video hochladen' : 'Upload'}
+                </button>
+              </div>
+            </div>
+          </div>
+        ) : null}
+
         {error ? <p className="error">{error}</p> : null}
       </section>
     </main>
   );
 }
+

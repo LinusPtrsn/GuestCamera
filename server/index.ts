@@ -1,6 +1,7 @@
 import { createServer } from 'node:http';
 import { readFile, mkdir, writeFile, stat, appendFile } from 'node:fs/promises';
 import { createReadStream, existsSync, readFileSync } from 'node:fs';
+import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import crypto from 'node:crypto';
@@ -18,6 +19,14 @@ const storageRoot = path.resolve(projectRoot, 'captures');
 const logsRoot = path.resolve(projectRoot, 'logs');
 const frontendLogPath = path.join(logsRoot, 'frontend-errors.ndjson');
 const localEnvPath = path.join(projectRoot, '.env');
+const exiftoolCandidates = [
+  process.env.EXIFTOOL_PATH?.trim(),
+  'C:\\Users\\linus\\AppData\\Local\\Programs\\ExifTool\\ExifTool.exe',
+  'C:\\Users\\linus\\AppData\\Local\\Programs\\ExifTool\\exiftool.exe',
+  'C:\\Program Files\\ExifTool\\exiftool.exe',
+  'C:\\Program Files (x86)\\ExifTool\\exiftool.exe',
+  'exiftool'
+].filter(Boolean) as string[];
 
 loadDotEnv(localEnvPath);
 
@@ -255,17 +264,36 @@ async function uploadToImmich(filePath: string, capturedAt: string) {
   return { uploaded: true, assetId: uploadResult.id };
 }
 
+function quoteExiftoolValue(value: string) {
+  return value.replace(/"/g, '\\"');
+}
+
+async function writeDescriptionMetadata(filePath: string, description: string) {
+  const exiftool = exiftoolCandidates[0] || 'exiftool';
+  const args = ['-overwrite_original', '-Description=' + quoteExiftoolValue(description), filePath];
+  await new Promise<void>((resolve, reject) => {
+    const child = spawn(exiftool, args, { windowsHide: true });
+    let stderr = '';
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk.toString();
+    });
+    child.on('error', reject);
+    child.on('close', (code) => {
+      if (code === 0) {
+        resolve();
+        return;
+      }
+      reject(new Error(stderr.trim() || `ExifTool exited with code ${code}`));
+    });
+  });
+}
+
 async function handleCapture(req: any, res: any) {
   const form = await parseMultipart(req);
   const name = String(form.get('name') ?? '').trim();
   const mimeType = String(form.get('mimeType') ?? 'image/jpeg');
   const capturedAt = String(form.get('capturedAt') ?? new Date().toISOString());
   const photo = form.get('photo');
-
-  if (!name) {
-    json(res, 400, { ok: false, message: 'Name fehlt' });
-    return;
-  }
 
   if (!Buffer.isBuffer(photo)) {
     json(res, 400, { ok: false, message: 'Foto fehlt' });
@@ -288,6 +316,7 @@ async function handleCapture(req: any, res: any) {
 
   let uploadResult: { uploaded: boolean; albumId?: string; assetId?: string; warning?: string };
   try {
+    await writeDescriptionMetadata(fullPath, name || 'guest');
     uploadResult = await uploadToImmich(fullPath, capturedAt);
   } catch (cause) {
     json(res, 502, {

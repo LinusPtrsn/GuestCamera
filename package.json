@@ -6,7 +6,9 @@
   "scripts": {
     "dev": "concurrently -k -n backend,frontend -c cyan,green \"tsx watch server/index.ts\" \"vite\"",
     "build": "vite build",
-    "start": "tsx server/index.ts --serve-static"
+    "start": "tsx server/index.ts --serve-static",
+    "tunnel": "C:\\Users\\linus\\.cache\\codex-runtimes\\codex-primary-runtime\\dependencies\\node\\bin\\node.exe scripts/tunnel-qr.mjs",
+    "tunnel:only": "C:\\Users\\linus\\.cache\\codex-runtimes\\codex-primary-runtime\\dependencies\\node\\bin\\node.exe scripts/tunnel-only.mjs"
   },
   "dependencies": {
     "lucide-react": "^0.542.0",
@@ -14,11 +16,12 @@
     "react-dom": "^19.1.1"
   },
   "devDependencies": {
-    "@vitejs/plugin-react": "^5.0.2",
     "@types/node": "^24.3.0",
     "@types/react": "^19.1.12",
     "@types/react-dom": "^19.1.9",
+    "@vitejs/plugin-react": "^5.0.2",
     "concurrently": "^9.2.1",
+    "qrcode": "^1.5.4",
     "tsx": "^4.20.5",
     "typescript": "^5.9.2",
     "vite": "^7.1.3"
