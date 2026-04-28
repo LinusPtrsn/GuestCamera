@@ -1,7 +1,8 @@
 import { createServer } from 'node:http';
-import { readFile, mkdir, writeFile, stat, appendFile } from 'node:fs/promises';
+import { readFile, mkdir, writeFile, stat, appendFile, mkdtemp, rm } from 'node:fs/promises';
 import { createReadStream, existsSync, readFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import crypto from 'node:crypto';
@@ -11,14 +12,45 @@ type ImmichSharedLinkAuth = {
   slug?: string;
 };
 
+type ImmichSharedLinkResponse = {
+  assets?: ImmichAsset[];
+  album?: {
+    id: string;
+    assetCount?: number;
+    albumThumbnailAssetId?: string | null;
+  };
+};
+
+type ImmichAsset = {
+  id: string;
+  createdAt?: string;
+  fileCreatedAt?: string;
+  thumbhash?: string | null;
+};
+
+type ImmichTimeBucket = {
+  timeBucket: string;
+  count: number;
+};
+
+type ImmichTimeBucketAssets = {
+  id: string[];
+  isTrashed?: boolean[];
+  fileCreatedAt?: string[];
+  thumbhash?: Array<string | null>;
+};
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const projectRoot = path.resolve(__dirname, '..');
 const clientDist = path.join(projectRoot, 'dist', 'client');
-const storageRoot = path.resolve(projectRoot, 'captures');
+const tempRoot = path.join(os.tmpdir(), 'guest-camera');
 const logsRoot = path.resolve(projectRoot, 'logs');
 const frontendLogPath = path.join(logsRoot, 'frontend-errors.ndjson');
 const localEnvPath = path.join(projectRoot, '.env');
+const maxUploadBytes = Number(process.env.MAX_UPLOAD_BYTES ?? 250 * 1024 * 1024);
+const thumbnailAvailabilityCache = new Map<string, { ok: boolean; checkedAt: number }>();
+const thumbnailResponseCache = new Map<string, { body: Buffer; contentType: string; checkedAt: number }>();
 const exiftoolCandidates = [
   process.env.EXIFTOOL_PATH?.trim(),
   'C:\\Users\\linus\\AppData\\Local\\Programs\\ExifTool\\ExifTool.exe',
@@ -41,7 +73,7 @@ const immichSharedLinkUrl = process.env.IMMICH_SHARED_LINK_URL?.trim() || '';
 const immichConfigured = immichApiKey.length > 0 || !!immichSharedLink;
 
 async function ensureDirectories() {
-  await mkdir(storageRoot, { recursive: true });
+  await mkdir(tempRoot, { recursive: true });
   await mkdir(logsRoot, { recursive: true });
 }
 
@@ -132,44 +164,164 @@ async function appendFrontendLog(entry: Record<string, unknown>) {
   console.log(`[frontend] ${line.trimEnd()}`);
 }
 
-async function getGalleryEntries() {
-  const entries: Array<{ name: string; path: string; createdAt: string; size: number; url: string }> = [];
+function addSharedLinkParams(url: URL) {
+  if (immichSharedLink?.key) {
+    url.searchParams.set('key', immichSharedLink.key);
+  }
+  if (immichSharedLink?.slug) {
+    url.searchParams.set('slug', immichSharedLink.slug);
+  }
+}
 
-  const walk = async (dir: string) => {
-    if (!existsSync(dir)) {
-      return;
+function immichApiUrl(pathname: string, params: Record<string, string | undefined> = {}) {
+  const url = new URL(`${immichBaseUrl}${pathname}`);
+  addSharedLinkParams(url);
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== undefined) {
+      url.searchParams.set(key, value);
     }
+  }
+  return url;
+}
 
-    const items = await import('node:fs/promises').then((m) => m.readdir(dir, { withFileTypes: true }));
-    for (const item of items) {
-      const fullPath = path.join(dir, item.name);
-      if (item.isDirectory()) {
-        await walk(fullPath);
+async function fetchImmichJson<T>(pathname: string, params: Record<string, string | undefined> = {}) {
+  const response = await fetch(immichApiUrl(pathname, params), {
+    headers: {
+      Accept: 'application/json',
+      ...(immichApiKey ? { 'x-api-key': immichApiKey } : {})
+    }
+  });
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`Immich request failed: ${response.status} ${text}`);
+  }
+  return (await response.json()) as T;
+}
+
+function getImmichThumbnailUrl(assetId: string, thumbhash?: string | null) {
+  const url = immichApiUrl(`/assets/${assetId}/thumbnail`);
+  if (thumbhash) {
+    url.searchParams.set('c', thumbhash);
+  }
+  return url.toString();
+}
+
+function getPublicThumbnailUrl(assetId: string, thumbhash?: string | null) {
+  const params = new URLSearchParams();
+  if (thumbhash) {
+    params.set('c', thumbhash);
+  }
+  const suffix = params.size > 0 ? `?${params}` : '';
+  return `/api/immich-thumbnails/${encodeURIComponent(assetId)}${suffix}`;
+}
+
+async function hasImmichThumbnail(assetId: string, thumbnailUrl: string) {
+  const cached = thumbnailAvailabilityCache.get(assetId);
+  if (cached && Date.now() - cached.checkedAt < 5 * 60 * 1000) {
+    return cached.ok;
+  }
+
+  const response = await fetch(thumbnailUrl, {
+    method: 'HEAD',
+    headers: {
+      ...(immichApiKey ? { 'x-api-key': immichApiKey } : {})
+    }
+  });
+  const ok = response.ok && !!response.headers.get('content-type')?.startsWith('image/');
+  thumbnailAvailabilityCache.set(assetId, { ok, checkedAt: Date.now() });
+  return ok;
+}
+
+async function getCachedImmichThumbnail(assetId: string, thumbhash?: string | null) {
+  const cacheKey = `${assetId}:${thumbhash ?? ''}`;
+  const cached = thumbnailResponseCache.get(cacheKey);
+  if (cached && Date.now() - cached.checkedAt < 5 * 60 * 1000) {
+    return cached;
+  }
+
+  const response = await fetch(getImmichThumbnailUrl(assetId, thumbhash), {
+    headers: {
+      Accept: 'image/*',
+      ...(immichApiKey ? { 'x-api-key': immichApiKey } : {})
+    }
+  });
+  const contentType = response.headers.get('content-type') ?? '';
+  if (!response.ok || !contentType.startsWith('image/')) {
+    throw new Error(`Immich thumbnail failed: ${response.status}`);
+  }
+
+  const body = Buffer.from(await response.arrayBuffer());
+  const entry = { body, contentType, checkedAt: Date.now() };
+  thumbnailResponseCache.set(cacheKey, entry);
+  return entry;
+}
+
+async function getImmichGallery() {
+  if (!immichSharedLink) {
+    return { total: 0, recent: [], albumUrl: immichSharedLinkUrl || null };
+  }
+
+  const sharedLink = await fetchImmichJson<ImmichSharedLinkResponse>('/shared-links/me');
+  const albumId = sharedLink.album?.id;
+  const total = sharedLink.album?.assetCount ?? sharedLink.assets?.length ?? 0;
+  const recent: Array<{ name: string; url: string; thumbnailUrl: string | null; createdAt: string; size: number }> = [];
+
+  if (albumId) {
+    const buckets = await fetchImmichJson<ImmichTimeBucket[]>('/timeline/buckets', { albumId, order: 'desc' });
+    for (const bucket of buckets) {
+      if (recent.length >= 3) {
+        break;
+      }
+
+      const assets = await fetchImmichJson<ImmichTimeBucketAssets>('/timeline/bucket', {
+        albumId,
+        timeBucket: bucket.timeBucket,
+        order: 'desc'
+      });
+      for (let index = 0; index < assets.id.length && recent.length < 3; index += 1) {
+        if (assets.isTrashed?.[index]) {
+          continue;
+        }
+
+        const id = assets.id[index];
+        const immichThumbnailUrl = getImmichThumbnailUrl(id, assets.thumbhash?.[index]);
+        if (!(await hasImmichThumbnail(id, immichThumbnailUrl))) {
+          continue;
+        }
+
+        const thumbnailUrl = getPublicThumbnailUrl(id, assets.thumbhash?.[index]);
+        recent.push({
+          name: id,
+          url: thumbnailUrl,
+          thumbnailUrl,
+          createdAt: assets.fileCreatedAt?.[index] ?? bucket.timeBucket,
+          size: 0
+        });
+      }
+    }
+  } else {
+    for (const asset of sharedLink.assets ?? []) {
+      if (recent.length >= 3) {
+        break;
+      }
+
+      const immichThumbnailUrl = getImmichThumbnailUrl(asset.id, asset.thumbhash);
+      if (!(await hasImmichThumbnail(asset.id, immichThumbnailUrl))) {
         continue;
       }
 
-      if (!item.isFile()) {
-        continue;
-      }
-
-      if (!/\.(jpg|jpeg|png|webp)$/i.test(item.name)) {
-        continue;
-      }
-
-      const statResult = await stat(fullPath);
-      entries.push({
-        name: item.name,
-        path: fullPath,
-        createdAt: statResult.mtime.toISOString(),
-        size: statResult.size,
-        url: `/api/captures/${encodeURIComponent(path.relative(storageRoot, fullPath).split(path.sep).join('/'))}`,
+      const thumbnailUrl = getPublicThumbnailUrl(asset.id, asset.thumbhash);
+      recent.push({
+        name: asset.id,
+        url: thumbnailUrl,
+        thumbnailUrl,
+        createdAt: asset.fileCreatedAt ?? asset.createdAt ?? '',
+        size: 0
       });
     }
-  };
+  }
 
-  await walk(storageRoot);
-  entries.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-  return entries;
+  return { total, recent, albumUrl: immichSharedLinkUrl || null };
 }
 
 async function parseMultipart(req: any) {
@@ -181,9 +333,12 @@ async function parseMultipart(req: any) {
 
   const boundary = `--${match[1] ?? match[2]}`;
   const chunks: Buffer[] = [];
+  let totalBytes = 0;
   for await (const chunk of req) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-    if (Buffer.concat(chunks).length > 20 * 1024 * 1024) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    chunks.push(buffer);
+    totalBytes += buffer.length;
+    if (totalBytes > maxUploadBytes) {
       throw new Error('Upload too large');
     }
   }
@@ -220,7 +375,7 @@ async function parseMultipart(req: any) {
   return fields;
 }
 
-async function uploadToImmich(filePath: string, capturedAt: string) {
+async function uploadToImmich(filePath: string, capturedAt: string, mimeType: string) {
   if (!immichConfigured) {
     return { uploaded: false, warning: 'IMMICH_SHARED_LINK_URL oder IMMICH_SHARED_LINK_KEY fehlt' };
   }
@@ -230,7 +385,7 @@ async function uploadToImmich(filePath: string, capturedAt: string) {
   const checksum = crypto.createHash('sha1').update(fileBuffer).digest('hex');
 
   const form = new FormData();
-  form.append('assetData', new Blob([fileBuffer], { type: 'image/jpeg' }), filename);
+  form.append('assetData', new Blob([fileBuffer], { type: mimeType }), filename);
   form.append('deviceAssetId', checksum);
   form.append('deviceId', 'guest-camera');
   form.append('fileCreatedAt', capturedAt);
@@ -262,6 +417,21 @@ async function uploadToImmich(filePath: string, capturedAt: string) {
 
   const uploadResult = (await uploadResponse.json()) as { id?: string; status?: string; duplicate?: boolean };
   return { uploaded: true, assetId: uploadResult.id };
+}
+
+function extensionForMimeType(mimeType: string) {
+  const normalized = mimeType.toLowerCase().split(';')[0].trim();
+  if (normalized === 'image/png') return '.png';
+  if (normalized === 'image/webp') return '.webp';
+  if (normalized === 'video/mp4') return '.mp4';
+  if (normalized === 'video/quicktime') return '.mov';
+  if (normalized === 'video/webm') return '.webm';
+  if (normalized.startsWith('video/')) return '.webm';
+  return '.jpg';
+}
+
+function isImageMimeType(mimeType: string) {
+  return mimeType.toLowerCase().startsWith('image/');
 }
 
 function quoteExiftoolValue(value: string) {
@@ -296,7 +466,15 @@ function mergeWarnings(...warnings: Array<string | undefined>) {
 }
 
 async function handleCapture(req: any, res: any) {
-  const form = await parseMultipart(req);
+  let form: Map<string, string | Buffer>;
+  try {
+    form = await parseMultipart(req);
+  } catch (cause) {
+    const message = cause instanceof Error ? cause.message : 'Upload konnte nicht gelesen werden';
+    json(res, message === 'Upload too large' ? 413 : 400, { ok: false, message });
+    return;
+  }
+
   const name = String(form.get('name') ?? '').trim();
   const mimeType = String(form.get('mimeType') ?? 'image/jpeg');
   const capturedAt = String(form.get('capturedAt') ?? new Date().toISOString());
@@ -307,44 +485,39 @@ async function handleCapture(req: any, res: any) {
     return;
   }
 
-  const safeName = name
-    .normalize('NFKD')
-    .replace(/[^\w.-]+/g, '-')
-    .replace(/-+/g, '-')
-    .replace(/^-|-$/g, '')
-    .slice(0, 80) || 'guest';
-  const date = capturedAt.slice(0, 10);
-  const dir = path.join(storageRoot, safeName, date);
-  await mkdir(dir, { recursive: true });
-
-  const filename = `${capturedAt.replace(/[:.]/g, '-')}-${crypto.randomUUID().slice(0, 8)}.jpg`;
-  const fullPath = path.join(dir, filename);
+  const extension = extensionForMimeType(mimeType);
+  const filename = `${capturedAt.replace(/[:.]/g, '-')}-${crypto.randomUUID().slice(0, 8)}${extension}`;
+  const tempDir = await mkdtemp(path.join(tempRoot, 'upload-'));
+  const fullPath = path.join(tempDir, filename);
   await writeFile(fullPath, photo);
 
   let metadataWarning = '';
-  try {
-    await writeDescriptionMetadata(fullPath, name || 'guest');
-  } catch (cause) {
-    metadataWarning = cause instanceof Error ? `Metadaten konnten nicht geschrieben werden: ${cause.message}` : 'Metadaten konnten nicht geschrieben werden';
-    console.warn(metadataWarning);
-  }
-
   let uploadResult: { uploaded: boolean; albumId?: string; assetId?: string; warning?: string };
   try {
-    uploadResult = await uploadToImmich(fullPath, capturedAt);
+    if (isImageMimeType(mimeType)) {
+      try {
+        await writeDescriptionMetadata(fullPath, name || 'guest');
+      } catch (cause) {
+        metadataWarning = cause instanceof Error ? `Metadaten konnten nicht geschrieben werden: ${cause.message}` : 'Metadaten konnten nicht geschrieben werden';
+        console.warn(metadataWarning);
+      }
+    }
+    uploadResult = await uploadToImmich(fullPath, capturedAt, mimeType);
   } catch (cause) {
     json(res, 502, {
       ok: false,
-      localPath: fullPath,
+      localPath: '',
       albumName: 'Immich Shared Link',
       message: cause instanceof Error ? cause.message : 'Immich upload failed'
     });
+    await rm(tempDir, { recursive: true, force: true }).catch(() => {});
     return;
   }
+  await rm(tempDir, { recursive: true, force: true }).catch(() => {});
 
   json(res, 200, {
     ok: true,
-    localPath: fullPath,
+    localPath: '',
     albumName: 'Immich Shared Link',
     ...uploadResult,
     warning: mergeWarnings(metadataWarning, uploadResult.warning) || undefined
@@ -361,7 +534,7 @@ async function serveStatic(req: any, res: any) {
     json(res, 200, {
       immichConfigured,
       sharedLinkConfigured: !!immichSharedLink,
-      storageRoot,
+      storageRoot: '',
       apiBaseUrl: immichBaseUrl
     });
     return;
@@ -388,38 +561,32 @@ async function serveStatic(req: any, res: any) {
   }
 
   if (req.url === '/api/gallery' && req.method === 'GET') {
-    const entries = await getGalleryEntries();
-    json(res, 200, {
-      total: entries.length,
-      recent: entries.slice(0, 3),
-      albumUrl: immichSharedLinkUrl || null
-    });
+    json(res, 200, await getImmichGallery());
     return;
   }
 
-  if (req.url?.startsWith('/api/captures/') && req.method === 'GET') {
-    const rel = decodeURIComponent(req.url.slice('/api/captures/'.length));
-    const safeRel = rel.replace(/^\/+/, '');
-    const target = path.resolve(storageRoot, safeRel.replace(/\//g, path.sep));
-    if (!target.startsWith(storageRoot) || !existsSync(target)) {
-      json(res, 404, { ok: false, message: 'Not found' });
+  if (req.method === 'GET' && req.url?.startsWith('/api/immich-thumbnails/')) {
+    const parsed = new URL(req.url, 'http://127.0.0.1');
+    const assetId = decodeURIComponent(parsed.pathname.slice('/api/immich-thumbnails/'.length));
+    const thumbhash = parsed.searchParams.get('c');
+
+    if (!assetId) {
+      json(res, 400, { ok: false, message: 'Asset fehlt' });
       return;
     }
 
-    const ext = path.extname(target).toLowerCase();
-    const contentType =
-      ext === '.png'
-        ? 'image/png'
-        : ext === '.webp'
-          ? 'image/webp'
-          : 'image/jpeg';
-    const fileStat = await stat(target);
-    res.writeHead(200, {
-      'Content-Type': contentType,
-      'Content-Length': fileStat.size,
-      'Cache-Control': 'no-store'
-    });
-    createReadStream(target).pipe(res);
+    try {
+      const thumbnail = await getCachedImmichThumbnail(assetId, thumbhash);
+      res.writeHead(200, {
+        'Content-Type': thumbnail.contentType,
+        'Content-Length': thumbnail.body.length,
+        'Cache-Control': 'private, max-age=60'
+      });
+      res.end(thumbnail.body);
+    } catch (cause) {
+      console.error('Failed to proxy Immich thumbnail', cause);
+      json(res, 502, { ok: false, message: 'Thumbnail konnte nicht geladen werden' });
+    }
     return;
   }
 
