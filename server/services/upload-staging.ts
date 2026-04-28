@@ -4,6 +4,14 @@ import path from 'node:path';
 import Busboy from 'busboy';
 import type { CaptureUpload } from '../types';
 
+export const uploadFieldLimits = {
+  fields: 8,
+  fieldNameSize: 64,
+  fieldSize: 1024,
+  files: 1,
+  parts: 12
+};
+
 export async function parseCaptureUpload(req: any, tempRoot: string, maxUploadBytes: number): Promise<CaptureUpload> {
   const contentType = String(req.headers['content-type'] ?? '');
   if (!contentType.toLowerCase().startsWith('multipart/form-data')) {
@@ -17,7 +25,10 @@ export async function parseCaptureUpload(req: any, tempRoot: string, maxUploadBy
   return new Promise((resolve, reject) => {
     const busboy = Busboy({
       headers: req.headers,
-      limits: maxUploadBytes > 0 ? { fileSize: maxUploadBytes } : undefined
+      limits: {
+        ...uploadFieldLimits,
+        ...(maxUploadBytes > 0 ? { fileSize: maxUploadBytes } : {})
+      }
     });
     let fileFound = false;
     let activeFile: NodeJS.ReadableStream | null = null;
@@ -42,7 +53,15 @@ export async function parseCaptureUpload(req: any, tempRoot: string, maxUploadBy
       reject(cause);
     };
 
-    busboy.on('field', (name, value) => {
+    busboy.on('field', (name, value, info) => {
+      if (info.nameTruncated) {
+        fail(new Error('Upload field name too large'));
+        return;
+      }
+      if (info.valueTruncated) {
+        fail(new Error('Upload field too large'));
+        return;
+      }
       fields.set(name, value);
     });
     busboy.on('file', (name, file) => {
@@ -66,6 +85,15 @@ export async function parseCaptureUpload(req: any, tempRoot: string, maxUploadBy
       file.pipe(fileWrite);
     });
     busboy.on('error', fail);
+    busboy.on('fieldsLimit', () => {
+      fail(new Error('Too many upload fields'));
+    });
+    busboy.on('filesLimit', () => {
+      fail(new Error('Too many upload files'));
+    });
+    busboy.on('partsLimit', () => {
+      fail(new Error('Too many upload parts'));
+    });
     busboy.on('finish', () => {
       if (completed) {
         return;
