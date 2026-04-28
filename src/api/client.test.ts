@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { sendFrontendLog, uploadCapture } from './client';
+import { fetchGallery, isGalleryResponse, sendFrontendLog, uploadCapture } from './client';
 
 class MockXHR {
   static latest: MockXHR | null = null;
@@ -39,6 +39,31 @@ describe('api client', () => {
     sendFrontendLog({ level: 'info', message: 'hello', source: 'test' });
 
     expect(beacon).toHaveBeenCalledWith('/api/client-log', expect.any(Blob));
+  });
+
+  it('rejects gallery error responses instead of returning the server error shape', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: false,
+      status: 502,
+      json: () => Promise.resolve({ ok: false, message: 'Immich unavailable' })
+    }));
+
+    await expect(fetchGallery()).rejects.toThrow('Immich unavailable');
+  });
+
+  it('rejects malformed gallery success payloads', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({ total: 3 })
+    }));
+
+    await expect(fetchGallery()).rejects.toThrow('unerwartetes Format');
+  });
+
+  it('validates gallery response shape', () => {
+    expect(isGalleryResponse({ total: 1, recent: [], albumUrl: null })).toBe(true);
+    expect(isGalleryResponse({ total: 1 })).toBe(false);
   });
 
   it('uploads captures through XMLHttpRequest and reports progress', async () => {

@@ -20,7 +20,31 @@ export function sendFrontendLog(entry: FrontendLog) {
 
 export async function fetchGallery() {
   const response = await fetch('/api/gallery');
-  return (await response.json()) as GalleryResponse;
+  const payload = await response.json();
+  if (!response.ok) {
+    throw new Error(errorMessageFromPayload(payload, `Galerie konnte nicht geladen werden (${response.status})`));
+  }
+  if (!isGalleryResponse(payload)) {
+    throw new Error('Galerie-Antwort hatte ein unerwartetes Format');
+  }
+  return payload;
+}
+
+function errorMessageFromPayload(payload: unknown, fallback: string) {
+  if (payload && typeof payload === 'object' && 'message' in payload && typeof payload.message === 'string') {
+    return payload.message;
+  }
+  return fallback;
+}
+
+export function isGalleryResponse(payload: unknown): payload is GalleryResponse {
+  if (!payload || typeof payload !== 'object') {
+    return false;
+  }
+  const candidate = payload as Partial<GalleryResponse>;
+  return typeof candidate.total === 'number'
+    && Array.isArray(candidate.recent)
+    && (typeof candidate.albumUrl === 'string' || candidate.albumUrl === null);
 }
 
 export async function fetchStatus() {
