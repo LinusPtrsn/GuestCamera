@@ -8,8 +8,8 @@
     "typecheck": "tsc --noEmit",
     "build": "vite build",
     "start": "tsx server/index.ts --serve-static",
-    "tunnel": "C:\\Users\\linus\\.cache\\codex-runtimes\\codex-primary-runtime\\dependencies\\node\\bin\\node.exe scripts/tunnel-qr.mjs",
-    "tunnel:only": "C:\\Users\\linus\\.cache\\codex-runtimes\\codex-primary-runtime\\dependencies\\node\\bin\\node.exe scripts/tunnel-only.mjs"
+    "tunnel": "node scripts/tunnel-qr.mjs",
+    "tunnel:only": "node scripts/tunnel-only.mjs"
   },
   "dependencies": {
     "lucide-react": "^0.542.0",

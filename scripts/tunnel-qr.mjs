@@ -7,14 +7,13 @@ import QRCode from 'qrcode';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const projectRoot = path.resolve(__dirname, '..');
-const cloudflaredPath = 'C:\\Users\\linus\\Tools\\cloudflared\\cloudflared.exe';
-const cmdPath = 'C:\\Windows\\System32\\cmd.exe';
+const cloudflaredPath = process.env.CLOUDFLARED_PATH?.trim() || 'cloudflared';
 const qrOutputPath = path.join(projectRoot, 'guest-camera-tunnel-qr-latest.png');
 const cloudflaredLogPath = path.join(projectRoot, 'logs', 'cloudflared.latest.log');
 
 await fs.mkdir(path.dirname(cloudflaredLogPath), { recursive: true });
 
-const child = spawn(cmdPath, ['/c', cloudflaredPath, 'tunnel', '--url', 'http://127.0.0.1:5173'], {
+const child = spawn(cloudflaredPath, ['tunnel', '--url', 'http://127.0.0.1:5173'], {
   cwd: projectRoot,
   windowsHide: true,
   stdio: ['ignore', 'pipe', 'pipe']

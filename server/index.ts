@@ -53,10 +53,6 @@ const thumbnailAvailabilityCache = new Map<string, { ok: boolean; checkedAt: num
 const thumbnailResponseCache = new Map<string, { body: Buffer; contentType: string; checkedAt: number }>();
 const exiftoolCandidates = [
   process.env.EXIFTOOL_PATH?.trim(),
-  'C:\\Users\\linus\\AppData\\Local\\Programs\\ExifTool\\ExifTool.exe',
-  'C:\\Users\\linus\\AppData\\Local\\Programs\\ExifTool\\exiftool.exe',
-  'C:\\Program Files\\ExifTool\\exiftool.exe',
-  'C:\\Program Files (x86)\\ExifTool\\exiftool.exe',
   'exiftool'
 ].filter(Boolean) as string[];
 
@@ -434,28 +430,33 @@ function isImageMimeType(mimeType: string) {
   return mimeType.toLowerCase().startsWith('image/');
 }
 
-function quoteExiftoolValue(value: string) {
-  return value.replace(/"/g, '\\"');
-}
-
 async function writeDescriptionMetadata(filePath: string, description: string) {
-  const exiftool = exiftoolCandidates[0] || 'exiftool';
-  const args = ['-overwrite_original', '-Description=' + quoteExiftoolValue(description), filePath];
-  await new Promise<void>((resolve, reject) => {
-    const child = spawn(exiftool, args, { windowsHide: true });
-    let stderr = '';
-    child.stderr.on('data', (chunk) => {
-      stderr += chunk.toString();
+  const errors: string[] = [];
+  for (const exiftool of exiftoolCandidates) {
+    const args = ['-overwrite_original', '-Description=' + description, filePath];
+    const result = await new Promise<{ ok: true } | { ok: false; message: string }>((resolve) => {
+      const child = spawn(exiftool, args, { windowsHide: true });
+      let stderr = '';
+      child.stderr.on('data', (chunk) => {
+        stderr += chunk.toString();
+      });
+      child.on('error', (cause) => {
+        resolve({ ok: false, message: cause.message });
+      });
+      child.on('close', (code) => {
+        if (code === 0) {
+          resolve({ ok: true });
+          return;
+        }
+        resolve({ ok: false, message: stderr.trim() || `ExifTool exited with code ${code}` });
+      });
     });
-    child.on('error', reject);
-    child.on('close', (code) => {
-      if (code === 0) {
-        resolve();
-        return;
-      }
-      reject(new Error(stderr.trim() || `ExifTool exited with code ${code}`));
-    });
-  });
+    if (result.ok) {
+      return;
+    }
+    errors.push(`${exiftool}: ${result.message}`);
+  }
+  throw new Error(errors.join(' | ') || 'ExifTool is not available');
 }
 
 function mergeWarnings(...warnings: Array<string | undefined>) {

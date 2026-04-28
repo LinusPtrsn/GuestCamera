@@ -12,6 +12,7 @@ FROM node:22-bookworm-slim AS runtime
 
 WORKDIR /app
 ENV NODE_ENV=production
+ENV EXIFTOOL_PATH=/usr/bin/exiftool
 
 RUN apt-get update \
   && apt-get install -y --no-install-recommends libimage-exiftool-perl ca-certificates \
