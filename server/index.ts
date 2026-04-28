@@ -288,6 +288,13 @@ async function writeDescriptionMetadata(filePath: string, description: string) {
   });
 }
 
+function mergeWarnings(...warnings: Array<string | undefined>) {
+  return warnings
+    .map((warning) => warning?.trim())
+    .filter((warning): warning is string => Boolean(warning))
+    .join(' | ');
+}
+
 async function handleCapture(req: any, res: any) {
   const form = await parseMultipart(req);
   const name = String(form.get('name') ?? '').trim();
@@ -314,9 +321,16 @@ async function handleCapture(req: any, res: any) {
   const fullPath = path.join(dir, filename);
   await writeFile(fullPath, photo);
 
-  let uploadResult: { uploaded: boolean; albumId?: string; assetId?: string; warning?: string };
+  let metadataWarning = '';
   try {
     await writeDescriptionMetadata(fullPath, name || 'guest');
+  } catch (cause) {
+    metadataWarning = cause instanceof Error ? `Metadaten konnten nicht geschrieben werden: ${cause.message}` : 'Metadaten konnten nicht geschrieben werden';
+    console.warn(metadataWarning);
+  }
+
+  let uploadResult: { uploaded: boolean; albumId?: string; assetId?: string; warning?: string };
+  try {
     uploadResult = await uploadToImmich(fullPath, capturedAt);
   } catch (cause) {
     json(res, 502, {
@@ -332,11 +346,17 @@ async function handleCapture(req: any, res: any) {
     ok: true,
     localPath: fullPath,
     albumName: 'Immich Shared Link',
-    ...uploadResult
+    ...uploadResult,
+    warning: mergeWarnings(metadataWarning, uploadResult.warning) || undefined
   });
 }
 
 async function serveStatic(req: any, res: any) {
+  if ((req.url === '/health' || req.url === '/api/health') && req.method === 'GET') {
+    json(res, 200, { ok: true });
+    return;
+  }
+
   if (req.url === '/api/status') {
     json(res, 200, {
       immichConfigured,

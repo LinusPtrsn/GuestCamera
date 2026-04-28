@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "concurrently -k -n backend,frontend -c cyan,green \"tsx watch server/index.ts\" \"vite\"",
+    "typecheck": "tsc --noEmit",
     "build": "vite build",
     "start": "tsx server/index.ts --serve-static",
     "tunnel": "C:\\Users\\linus\\.cache\\codex-runtimes\\codex-primary-runtime\\dependencies\\node\\bin\\node.exe scripts/tunnel-qr.mjs",

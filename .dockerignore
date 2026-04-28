@@ -1,0 +1,8 @@
+node_modules
+dist
+captures
+logs
+.git
+.env
+.vite
+*.log

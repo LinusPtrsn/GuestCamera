@@ -326,7 +326,7 @@ export default function App() {
           className="hidden-input"
           type="file"
           accept="video/*"
-          capture="camcorder"
+          capture
           onChange={handleNativeCapture}
           aria-hidden="true"
           tabIndex={-1}
@@ -373,4 +373,3 @@ export default function App() {
     </main>
   );
 }
-
