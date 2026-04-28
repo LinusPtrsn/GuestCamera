@@ -67,7 +67,7 @@ export class ImmichClient {
 
   async uploadAsset(filePath: string, capturedAt: string, mimeType: string) {
     if (!this.configured) {
-      return { uploaded: false, warning: 'IMMICH_SHARED_LINK_URL fehlt oder ist keine gueltige URL' };
+      throw new Error('IMMICH_SHARED_LINK_URL fehlt oder ist keine gueltige URL');
     }
 
     const filename = path.basename(filePath);
