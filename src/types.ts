@@ -31,6 +31,11 @@ export type GalleryResponse = {
   albumUrl: string | null;
 };
 
+export type GalleryLiveMessage = {
+  type: 'gallery:update';
+  gallery: GalleryResponse;
+};
+
 export type FrontendLog = {
   level: 'error' | 'warn' | 'info';
   message: string;

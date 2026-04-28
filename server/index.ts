@@ -4,6 +4,7 @@ import { createReadStream, existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import crypto from 'node:crypto';
+import type { Duplex } from 'node:stream';
 import { createServerConfig } from './config';
 import { captureFilename, normalizeCaptureMimeType, safeCapturedAt } from './services/capture-input';
 import { ImmichClient } from './services/immich-client';
@@ -32,6 +33,8 @@ const {
 const thumbnailAvailabilityCache = new Map<string, { ok: boolean; checkedAt: number }>();
 const thumbnailResponseCache = new Map<string, { body: Buffer; contentType: string; checkedAt: number }>();
 const immichClient = new ImmichClient({ baseUrl: immichBaseUrl, sharedLink: immichSharedLink });
+const liveClients = new Set<Duplex>();
+let lastGalleryBroadcastSignature = '';
 
 async function ensureDirectories() {
   await mkdir(tempRoot, { recursive: true });
@@ -45,6 +48,95 @@ function json(res: any, status: number, body: unknown) {
     'Content-Length': Buffer.byteLength(payload)
   });
   res.end(payload);
+}
+
+function webSocketFrame(payload: string) {
+  const body = Buffer.from(payload, 'utf8');
+  if (body.length < 126) {
+    return Buffer.concat([Buffer.from([0x81, body.length]), body]);
+  }
+  if (body.length <= 0xffff) {
+    const header = Buffer.alloc(4);
+    header[0] = 0x81;
+    header[1] = 126;
+    header.writeUInt16BE(body.length, 2);
+    return Buffer.concat([header, body]);
+  }
+
+  const header = Buffer.alloc(10);
+  header[0] = 0x81;
+  header[1] = 127;
+  header.writeBigUInt64BE(BigInt(body.length), 2);
+  return Buffer.concat([header, body]);
+}
+
+function broadcastLiveMessage(message: unknown) {
+  const frame = webSocketFrame(JSON.stringify(message));
+  for (const client of liveClients) {
+    if (!client.writable) {
+      liveClients.delete(client);
+      continue;
+    }
+    client.write(frame, (cause) => {
+      if (cause) {
+        liveClients.delete(client);
+        client.destroy();
+      }
+    });
+  }
+}
+
+function gallerySignature(gallery: Awaited<ReturnType<typeof getImmichGallery>>) {
+  return JSON.stringify({
+    total: gallery.total,
+    recent: gallery.recent.map((item) => ({
+      name: item.name,
+      thumbnailUrl: item.thumbnailUrl,
+      createdAt: item.createdAt
+    }))
+  });
+}
+
+async function broadcastGalleryUpdate({ force = false } = {}) {
+  try {
+    const gallery = await getImmichGallery();
+    const signature = gallerySignature(gallery);
+    if (!force && signature === lastGalleryBroadcastSignature) {
+      return;
+    }
+    lastGalleryBroadcastSignature = signature;
+    broadcastLiveMessage({ type: 'gallery:update', gallery });
+  } catch (cause) {
+    console.error('Failed to broadcast gallery update', cause);
+  }
+}
+
+function handleLiveUpgrade(req: any, socket: Duplex) {
+  const key = String(req.headers['sec-websocket-key'] ?? '');
+  if (!key) {
+    socket.destroy();
+    return;
+  }
+
+  const accept = crypto
+    .createHash('sha1')
+    .update(`${key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`)
+    .digest('base64');
+
+  socket.write([
+    'HTTP/1.1 101 Switching Protocols',
+    'Upgrade: websocket',
+    'Connection: Upgrade',
+    `Sec-WebSocket-Accept: ${accept}`,
+    '',
+    ''
+  ].join('\r\n'));
+
+  liveClients.add(socket);
+  socket.on('close', () => liveClients.delete(socket));
+  socket.on('end', () => liveClients.delete(socket));
+  socket.on('error', () => liveClients.delete(socket));
+  void broadcastGalleryUpdate({ force: true });
 }
 
 async function readJson(req: any) {
@@ -287,6 +379,8 @@ async function handleCapture(req: any, res: any) {
     ...uploadResult,
     warning: mergeWarnings(metadataWarning, uploadResult.warning) || undefined
   });
+  void broadcastGalleryUpdate({ force: true });
+  setTimeout(() => void broadcastGalleryUpdate(), 2500);
 }
 
 async function serveStatic(req: any, res: any) {
@@ -402,6 +496,19 @@ async function main() {
       });
     });
   });
+  server.on('upgrade', (req, socket) => {
+    const pathname = new URL(req.url ?? '/', 'http://127.0.0.1').pathname;
+    if (pathname === '/api/live') {
+      handleLiveUpgrade(req, socket);
+      return;
+    }
+    socket.destroy();
+  });
+  setInterval(() => {
+    if (liveClients.size > 0) {
+      void broadcastGalleryUpdate();
+    }
+  }, 10000);
 
   server.listen(port, '0.0.0.0', () => {
     console.log(`Guest Camera listening on http://0.0.0.0:${port}`);

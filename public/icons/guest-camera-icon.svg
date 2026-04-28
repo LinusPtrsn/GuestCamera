@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title">
+  <title>Guest Camera</title>
+  <rect width="512" height="512" rx="112" fill="#78cfff"/>
+  <circle cx="378" cy="120" r="58" fill="#ffd84d"/>
+  <path d="M0 326c70-46 145-67 226-61 95 7 167 66 286 34v213H0z" fill="#5fbd6f"/>
+  <path d="M0 372c84-24 167-20 248 12 80 31 164 35 264 2v126H0z" fill="#2f8f58"/>
+  <rect x="132" y="190" width="248" height="164" rx="38" fill="#18333d"/>
+  <path d="M186 166h84l26 32H160z" fill="#18333d"/>
+  <rect x="154" y="218" width="204" height="108" rx="26" fill="#f7fbff"/>
+  <circle cx="256" cy="272" r="58" fill="#18333d"/>
+  <circle cx="256" cy="272" r="34" fill="#78cfff"/>
+  <circle cx="312" cy="232" r="12" fill="#ffd84d"/>
+</svg>

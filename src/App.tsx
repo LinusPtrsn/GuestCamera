@@ -1,6 +1,6 @@
 import { Camera, RefreshCw, User, Video } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
-import { fetchGallery, fetchStatus, sendFrontendLog as sendFrontendLogEntry, uploadCapture as uploadCaptureRequest } from './api/client';
+import { fetchGallery, fetchStatus, isGalleryLiveMessage, sendFrontendLog as sendFrontendLogEntry, uploadCapture as uploadCaptureRequest } from './api/client';
 import { ConfirmationPreview } from './components/ConfirmationPreview';
 import { GalleryStrip } from './components/GalleryStrip';
 import { getBuildStatus } from './hooks/useBuildStatus';
@@ -229,6 +229,52 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    let closed = false;
+    let retryId: number | undefined;
+    let socket: WebSocket | null = null;
+
+    const connect = () => {
+      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      socket = new WebSocket(`${protocol}//${window.location.host}/api/live`);
+      socket.onmessage = (event) => {
+        try {
+          const payload = JSON.parse(String(event.data));
+          if (!isGalleryLiveMessage(payload)) {
+            return;
+          }
+          setGallery(payload.gallery);
+          setGalleryLoading(false);
+          setLocalUpload((current) => current?.status === 'done' ? null : current);
+        } catch (cause) {
+          sendFrontendLog({
+            level: 'warn',
+            message: cause instanceof Error ? cause.message : 'Live-Galerie-Update konnte nicht gelesen werden',
+            source: 'gallery.live'
+          });
+        }
+      };
+      socket.onclose = () => {
+        if (closed) {
+          return;
+        }
+        retryId = window.setTimeout(connect, 2000);
+      };
+      socket.onerror = () => {
+        socket?.close();
+      };
+    };
+
+    connect();
+    return () => {
+      closed = true;
+      if (retryId !== undefined) {
+        window.clearTimeout(retryId);
+      }
+      socket?.close();
+    };
+  }, []);
+
+  useEffect(() => {
     pendingShotRef.current = pendingShot;
   }, [pendingShot]);
 
@@ -342,6 +388,9 @@ export default function App() {
       setMessage(payload.uploaded ? (shot.kind === 'video' ? 'Video hochgeladen' : 'Foto hochgeladen') : 'Lokal gespeichert');
       if (payload.warning) setError(payload.warning);
       setLocalUpload((current) => current?.id === uploadId ? { ...current, progress: 1, status: 'done' } : current);
+      if (payload.uploaded) {
+        setGallery((current) => ({ ...current, total: current.total + 1 }));
+      }
       if (shot.previewUrl) URL.revokeObjectURL(shot.previewUrl);
     } catch (cause) {
       const text = cause instanceof Error ? cause.message : 'Unbekannter Fehler';
@@ -441,23 +490,25 @@ export default function App() {
           </div>
           <div className="title-actions">
             <div className="status-controls">
-              <span
-                className={`build-watermark ${hasBuildMismatch ? 'is-warning' : ''}`}
-                title={buildBadgeTitle}
-                aria-label={hasBuildMismatch ? 'Frontend und Backend Build-Version unterscheiden sich' : `Build ${buildBadgeLabel}`}
-              >
-                {buildBadgeLabel}
-              </span>
-              <button
-                className={`icon-button ${hasBuildMismatch ? 'is-super-refresh' : ''}`}
-                type="button"
-                onClick={handleRefreshAction}
-                disabled={!hasBuildMismatch && (galleryLoading || busy)}
-                aria-label={hasBuildMismatch ? 'Neue Version laden' : 'Vorschau aktualisieren'}
-                title={hasBuildMismatch ? 'Neue Version laden' : 'Vorschau aktualisieren'}
-              >
-                <RefreshCw size={19} />
-              </button>
+              <div className="refresh-stack">
+                <button
+                  className={`icon-button ${hasBuildMismatch ? 'is-super-refresh' : ''}`}
+                  type="button"
+                  onClick={handleRefreshAction}
+                  disabled={!hasBuildMismatch && (galleryLoading || busy)}
+                  aria-label={hasBuildMismatch ? 'Neue Version laden' : 'Vorschau aktualisieren'}
+                  title={hasBuildMismatch ? 'Neue Version laden' : 'Vorschau aktualisieren'}
+                >
+                  <RefreshCw size={19} />
+                </button>
+                <span
+                  className={`build-version ${hasBuildMismatch ? 'is-warning' : ''}`}
+                  title={buildBadgeTitle}
+                  aria-label={hasBuildMismatch ? 'Frontend und Backend Build-Version unterscheiden sich' : `Build ${buildBadgeLabel}`}
+                >
+                  {buildBadgeLabel}
+                </span>
+              </div>
               <div className="pill">{message}</div>
               <label className="auto-upload-toggle">
                 <input

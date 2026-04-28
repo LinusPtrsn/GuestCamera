@@ -1,4 +1,4 @@
-import type { BuildInfoResponse, CaptureResponse, FrontendLog, GalleryResponse, StatusResponse } from '../types';
+import type { BuildInfoResponse, CaptureResponse, FrontendLog, GalleryLiveMessage, GalleryResponse, StatusResponse } from '../types';
 
 export function sendFrontendLog(entry: FrontendLog) {
   const payload = JSON.stringify({
@@ -48,6 +48,14 @@ export function isGalleryResponse(payload: unknown): payload is GalleryResponse 
     && Array.isArray(candidate.recent)
     && candidate.recent.every(isGalleryItem)
     && (typeof candidate.albumUrl === 'string' || candidate.albumUrl === null);
+}
+
+export function isGalleryLiveMessage(payload: unknown): payload is GalleryLiveMessage {
+  if (!payload || typeof payload !== 'object') {
+    return false;
+  }
+  const candidate = payload as Record<string, unknown>;
+  return candidate.type === 'gallery:update' && isGalleryResponse(candidate.gallery);
 }
 
 function isGalleryItem(payload: unknown) {

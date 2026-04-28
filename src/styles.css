@@ -60,8 +60,7 @@ a {
 }
 
 .status-controls {
-  position: relative;
-  min-height: 48px;
+  min-height: 58px;
   border: 1px solid #355042;
   border-radius: 14px;
   display: inline-flex;
@@ -71,24 +70,29 @@ a {
   background: #102018;
 }
 
-.build-watermark {
-  position: absolute;
-  left: 8px;
-  top: 50%;
-  max-width: 112px;
-  transform: translateY(-50%);
-  color: rgba(184, 214, 192, 0.2);
-  font-size: 0.76rem;
+.refresh-stack {
+  width: 44px;
+  display: grid;
+  justify-items: center;
+  gap: 2px;
+  flex: 0 0 auto;
+}
+
+.build-version {
+  max-width: 44px;
+  color: rgba(184, 214, 192, 0.64);
+  font-size: 0.58rem;
   font-weight: 800;
-  line-height: 1;
-  pointer-events: none;
+  line-height: 1.05;
+  letter-spacing: 0;
+  text-align: center;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-.build-watermark.is-warning {
-  color: rgba(255, 210, 128, 0.45);
+.build-version.is-warning {
+  color: #ffd280;
 }
 
 .icon-button.is-super-refresh {
@@ -123,7 +127,7 @@ a {
 
 .icon-button {
   width: 40px;
-  height: 40px;
+  height: 36px;
   border: 0;
   border-radius: 10px;
   display: grid;
