@@ -14,6 +14,7 @@ type CaptureResponse = {
 type GalleryItem = {
   name: string;
   url: string;
+  thumbnailUrl: string | null;
   createdAt: string;
   size: number;
 };
@@ -47,13 +48,43 @@ type ShotState = {
   capturedAt: string;
 };
 
+const STORAGE_NAME_KEY = 'guest-camera:name';
+const STORAGE_NAME_SKIPPED_KEY = 'guest-camera:name-skipped';
+
+function extensionForMedia(kind: MediaKind, mimeType: string) {
+  if (kind === 'video') {
+    if (mimeType === 'video/mp4') return '.mp4';
+    if (mimeType === 'video/quicktime') return '.mov';
+    if (mimeType === 'video/webm') return '.webm';
+    return '.webm';
+  }
+  if (mimeType === 'image/png') return '.png';
+  if (mimeType === 'image/webp') return '.webp';
+  return '.jpg';
+}
+
 export default function App() {
   const photoInputRef = useRef<HTMLInputElement | null>(null);
   const videoInputRef = useRef<HTMLInputElement | null>(null);
   const libraryInputRef = useRef<HTMLInputElement | null>(null);
+  const uploadInFlightRef = useRef(false);
 
-  const [mode, setMode] = useState<Mode>('intro');
-  const [name, setName] = useState('');
+  const [name, setName] = useState(() => {
+    try {
+      return window.localStorage.getItem(STORAGE_NAME_KEY) ?? '';
+    } catch {
+      return '';
+    }
+  });
+  const [mode, setMode] = useState<Mode>(() => {
+    try {
+      const hasName = window.localStorage.getItem(STORAGE_NAME_KEY);
+      const hasSkipped = window.localStorage.getItem(STORAGE_NAME_SKIPPED_KEY);
+      return hasName || hasSkipped ? 'main' : 'intro';
+    } catch {
+      return 'intro';
+    }
+  });
   const [status, setStatus] = useState<StatusResponse | null>(null);
   const [gallery, setGallery] = useState<GalleryResponse>({ total: 0, recent: [], albumUrl: null });
   const [busy, setBusy] = useState(false);
@@ -66,6 +97,8 @@ export default function App() {
   const totalCount = gallery.total;
   const extraCount = Math.max(totalCount - 3, 0);
   const albumLink = gallery.albumUrl || '#';
+  const showUploadPlaceholder = busy || uploadInFlightRef.current;
+  const uploadPlaceholderLabel = pendingShot?.kind === 'video' ? 'Video wird hochgeladen' : 'Foto wird hochgeladen';
   const sendFrontendLog = (entry: FrontendLog) => {
     const payload = JSON.stringify({
       ...entry,
@@ -89,6 +122,19 @@ export default function App() {
     const data = (await response.json()) as GalleryResponse;
     setGallery(data);
   };
+
+  useEffect(() => {
+    try {
+      if (name.trim()) {
+        window.localStorage.setItem(STORAGE_NAME_KEY, name.trim());
+        window.localStorage.removeItem(STORAGE_NAME_SKIPPED_KEY);
+      } else {
+        window.localStorage.removeItem(STORAGE_NAME_KEY);
+      }
+    } catch {
+      // Ignore storage failures on locked-down browsers.
+    }
+  }, [name]);
 
   useEffect(() => {
     let active = true;
@@ -182,16 +228,18 @@ export default function App() {
   };
 
   const confirmUpload = async () => {
-    if (!pendingShot) return;
+    if (!pendingShot || uploadInFlightRef.current) return;
+    uploadInFlightRef.current = true;
     setBusy(true);
     setError('');
     setMessage(pendingShot.kind === 'video' ? 'Video-Upload läuft' : 'Upload läuft');
     try {
       const form = new FormData();
+      const mimeType = pendingShot.blob.type || (pendingShot.kind === 'video' ? 'video/webm' : 'image/jpeg');
       form.append('name', name.trim());
-      form.append('mimeType', pendingShot.blob.type || 'image/jpeg');
+      form.append('mimeType', mimeType);
       form.append('capturedAt', pendingShot.capturedAt);
-      form.append('photo', pendingShot.blob, `guest-camera-${Date.now()}.jpg`);
+      form.append('photo', pendingShot.blob, `guest-camera-${Date.now()}${extensionForMedia(pendingShot.kind, mimeType)}`);
 
       const response = await fetch('/api/capture', { method: 'POST', body: form });
       const payload = (await response.json()) as CaptureResponse;
@@ -213,6 +261,7 @@ export default function App() {
       });
       setMessage('Upload fehlgeschlagen');
     } finally {
+      uploadInFlightRef.current = false;
       setBusy(false);
     }
   };
@@ -222,6 +271,21 @@ export default function App() {
     setPendingShot(null);
     setMessage('Bereit');
     setError('');
+  };
+
+  const handleNameContinue = () => {
+    try {
+      if (name.trim()) {
+        window.localStorage.setItem(STORAGE_NAME_KEY, name.trim());
+        window.localStorage.removeItem(STORAGE_NAME_SKIPPED_KEY);
+      } else {
+        window.localStorage.removeItem(STORAGE_NAME_KEY);
+        window.localStorage.setItem(STORAGE_NAME_SKIPPED_KEY, '1');
+      }
+    } catch {
+      // Ignore storage failures on locked-down browsers.
+    }
+    setMode('main');
   };
 
   if (mode === 'intro') {
@@ -247,10 +311,10 @@ export default function App() {
           </label>
 
           <div className="intro-actions">
-            <button className="button secondary" type="button" onClick={() => setMode('main')}>
+            <button className="button secondary" type="button" onClick={handleNameContinue}>
               Überspringen
             </button>
-            <button className="button primary" type="button" onClick={() => setMode('main')}>
+            <button className="button primary" type="button" onClick={handleNameContinue}>
               Weiter
             </button>
           </div>
@@ -278,10 +342,23 @@ export default function App() {
         <section className="gallery-block">
           <a className="gallery-grid" href={albumLink} target="_blank" rel="noreferrer" aria-label="Gesamtes Album öffnen">
             {[0, 1, 2].map((slot) => {
+              if (slot === 0 && showUploadPlaceholder) {
+                return (
+                  <div key="video-upload" className="gallery-cell gallery-cell-uploading" aria-live="polite">
+                    <div className="upload-placeholder">
+                      <span>{uploadPlaceholderLabel}</span>
+                      <div className="upload-bar" aria-hidden="true">
+                        <div className="upload-bar-fill" />
+                      </div>
+                    </div>
+                  </div>
+                );
+              }
+
               const item = recent[slot];
               return (
                 <div key={slot} className={`gallery-cell gallery-cell-${slot + 1}`}>
-                  {item ? <img src={item.url} alt="" /> : null}
+                  {item?.thumbnailUrl ? <img src={item.thumbnailUrl} alt="" loading="lazy" /> : null}
                 </div>
               );
             })}

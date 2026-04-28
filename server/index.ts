@@ -16,9 +16,11 @@ const __dirname = path.dirname(__filename);
 const projectRoot = path.resolve(__dirname, '..');
 const clientDist = path.join(projectRoot, 'dist', 'client');
 const storageRoot = path.resolve(projectRoot, 'captures');
+const thumbnailRoot = path.resolve(storageRoot, '.thumbnails');
 const logsRoot = path.resolve(projectRoot, 'logs');
 const frontendLogPath = path.join(logsRoot, 'frontend-errors.ndjson');
 const localEnvPath = path.join(projectRoot, '.env');
+const imageFilePattern = /\.(jpg|jpeg|png|webp)$/i;
 const exiftoolCandidates = [
   process.env.EXIFTOOL_PATH?.trim(),
   'C:\\Users\\linus\\AppData\\Local\\Programs\\ExifTool\\ExifTool.exe',
@@ -42,6 +44,7 @@ const immichConfigured = immichApiKey.length > 0 || !!immichSharedLink;
 
 async function ensureDirectories() {
   await mkdir(storageRoot, { recursive: true });
+  await mkdir(thumbnailRoot, { recursive: true });
   await mkdir(logsRoot, { recursive: true });
 }
 
@@ -133,10 +136,13 @@ async function appendFrontendLog(entry: Record<string, unknown>) {
 }
 
 async function getGalleryEntries() {
-  const entries: Array<{ name: string; path: string; createdAt: string; size: number; url: string }> = [];
+  const entries: Array<{ name: string; path: string; createdAt: string; size: number; url: string; thumbnailUrl: string | null }> = [];
 
   const walk = async (dir: string) => {
     if (!existsSync(dir)) {
+      return;
+    }
+    if (isWithinDirectory(thumbnailRoot, dir)) {
       return;
     }
 
@@ -152,17 +158,23 @@ async function getGalleryEntries() {
         continue;
       }
 
-      if (!/\.(jpg|jpeg|png|webp)$/i.test(item.name)) {
+      if (!imageFilePattern.test(item.name)) {
         continue;
       }
 
       const statResult = await stat(fullPath);
+      const thumbnailPath = thumbnailPathFor(fullPath);
+      if (!existsSync(thumbnailPath)) {
+        continue;
+      }
+
       entries.push({
         name: item.name,
         path: fullPath,
         createdAt: statResult.mtime.toISOString(),
         size: statResult.size,
         url: `/api/captures/${encodeURIComponent(path.relative(storageRoot, fullPath).split(path.sep).join('/'))}`,
+        thumbnailUrl: `/api/thumbnails/${encodeURIComponent(path.relative(thumbnailRoot, thumbnailPath).split(path.sep).join('/'))}`,
       });
     }
   };
@@ -170,6 +182,64 @@ async function getGalleryEntries() {
   await walk(storageRoot);
   entries.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   return entries;
+}
+
+function isWithinDirectory(parent: string, target: string) {
+  const relative = path.relative(parent, target);
+  return relative === '' || (!!relative && !relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
+function thumbnailPathFor(filePath: string) {
+  const relative = path.relative(storageRoot, filePath);
+  const withoutExt = relative.replace(/\.[^.]+$/, '');
+  return path.join(thumbnailRoot, `${withoutExt}.jpg`);
+}
+
+async function ensureThumbnail(sourcePath: string, thumbnailPath: string) {
+  await mkdir(path.dirname(thumbnailPath), { recursive: true });
+  const script = `
+Add-Type -AssemblyName System.Drawing
+$source = [System.Drawing.Image]::FromFile($args[0])
+try {
+  $max = 420
+  $ratio = [Math]::Min($max / $source.Width, $max / $source.Height)
+  if ($ratio -gt 1) { $ratio = 1 }
+  $width = [Math]::Max(1, [int][Math]::Round($source.Width * $ratio))
+  $height = [Math]::Max(1, [int][Math]::Round($source.Height * $ratio))
+  $bitmap = New-Object System.Drawing.Bitmap $width, $height
+  try {
+    $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+    try {
+      $graphics.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
+      $graphics.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::HighQuality
+      $graphics.PixelOffsetMode = [System.Drawing.Drawing2D.PixelOffsetMode]::HighQuality
+      $graphics.DrawImage($source, 0, 0, $width, $height)
+      $bitmap.Save($args[1], [System.Drawing.Imaging.ImageFormat]::Jpeg)
+    } finally {
+      $graphics.Dispose()
+    }
+  } finally {
+    $bitmap.Dispose()
+  }
+} finally {
+  $source.Dispose()
+}
+`;
+  await new Promise<void>((resolve, reject) => {
+    const child = spawn('powershell.exe', ['-NoProfile', '-Command', script, sourcePath, thumbnailPath], { windowsHide: true });
+    let stderr = '';
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk.toString();
+    });
+    child.on('error', reject);
+    child.on('close', (code) => {
+      if (code === 0) {
+        resolve();
+        return;
+      }
+      reject(new Error(stderr.trim() || `Thumbnail generator exited with code ${code}`));
+    });
+  });
 }
 
 async function parseMultipart(req: any) {
@@ -220,7 +290,7 @@ async function parseMultipart(req: any) {
   return fields;
 }
 
-async function uploadToImmich(filePath: string, capturedAt: string) {
+async function uploadToImmich(filePath: string, capturedAt: string, mimeType: string) {
   if (!immichConfigured) {
     return { uploaded: false, warning: 'IMMICH_SHARED_LINK_URL oder IMMICH_SHARED_LINK_KEY fehlt' };
   }
@@ -230,7 +300,7 @@ async function uploadToImmich(filePath: string, capturedAt: string) {
   const checksum = crypto.createHash('sha1').update(fileBuffer).digest('hex');
 
   const form = new FormData();
-  form.append('assetData', new Blob([fileBuffer], { type: 'image/jpeg' }), filename);
+  form.append('assetData', new Blob([fileBuffer], { type: mimeType }), filename);
   form.append('deviceAssetId', checksum);
   form.append('deviceId', 'guest-camera');
   form.append('fileCreatedAt', capturedAt);
@@ -262,6 +332,21 @@ async function uploadToImmich(filePath: string, capturedAt: string) {
 
   const uploadResult = (await uploadResponse.json()) as { id?: string; status?: string; duplicate?: boolean };
   return { uploaded: true, assetId: uploadResult.id };
+}
+
+function extensionForMimeType(mimeType: string) {
+  const normalized = mimeType.toLowerCase().split(';')[0].trim();
+  if (normalized === 'image/png') return '.png';
+  if (normalized === 'image/webp') return '.webp';
+  if (normalized === 'video/mp4') return '.mp4';
+  if (normalized === 'video/quicktime') return '.mov';
+  if (normalized === 'video/webm') return '.webm';
+  if (normalized.startsWith('video/')) return '.webm';
+  return '.jpg';
+}
+
+function isImageMimeType(mimeType: string) {
+  return mimeType.toLowerCase().startsWith('image/');
 }
 
 function quoteExiftoolValue(value: string) {
@@ -310,14 +395,22 @@ async function handleCapture(req: any, res: any) {
   const dir = path.join(storageRoot, safeName, date);
   await mkdir(dir, { recursive: true });
 
-  const filename = `${capturedAt.replace(/[:.]/g, '-')}-${crypto.randomUUID().slice(0, 8)}.jpg`;
+  const extension = extensionForMimeType(mimeType);
+  const filename = `${capturedAt.replace(/[:.]/g, '-')}-${crypto.randomUUID().slice(0, 8)}${extension}`;
   const fullPath = path.join(dir, filename);
   await writeFile(fullPath, photo);
 
   let uploadResult: { uploaded: boolean; albumId?: string; assetId?: string; warning?: string };
   try {
-    await writeDescriptionMetadata(fullPath, name || 'guest');
-    uploadResult = await uploadToImmich(fullPath, capturedAt);
+    if (isImageMimeType(mimeType)) {
+      await writeDescriptionMetadata(fullPath, name || 'guest');
+      try {
+        await ensureThumbnail(fullPath, thumbnailPathFor(fullPath));
+      } catch (cause) {
+        console.warn('Failed to create thumbnail', cause);
+      }
+    }
+    uploadResult = await uploadToImmich(fullPath, capturedAt, mimeType);
   } catch (cause) {
     json(res, 502, {
       ok: false,
@@ -396,6 +489,25 @@ async function serveStatic(req: any, res: any) {
     const fileStat = await stat(target);
     res.writeHead(200, {
       'Content-Type': contentType,
+      'Content-Length': fileStat.size,
+      'Cache-Control': 'no-store'
+    });
+    createReadStream(target).pipe(res);
+    return;
+  }
+
+  if (req.url?.startsWith('/api/thumbnails/') && req.method === 'GET') {
+    const rel = decodeURIComponent(req.url.slice('/api/thumbnails/'.length));
+    const safeRel = rel.replace(/^\/+/, '');
+    const target = path.resolve(thumbnailRoot, safeRel.replace(/\//g, path.sep));
+    if (!target.startsWith(thumbnailRoot) || !existsSync(target)) {
+      json(res, 404, { ok: false, message: 'Not found' });
+      return;
+    }
+
+    const fileStat = await stat(target);
+    res.writeHead(200, {
+      'Content-Type': 'image/jpeg',
       'Content-Length': fileStat.size,
       'Cache-Control': 'no-store'
     });
