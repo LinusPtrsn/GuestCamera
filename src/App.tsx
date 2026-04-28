@@ -87,6 +87,7 @@ export default function App() {
   });
   const [status, setStatus] = useState<StatusResponse | null>(null);
   const [gallery, setGallery] = useState<GalleryResponse>({ total: 0, recent: [], albumUrl: null });
+  const [galleryLoading, setGalleryLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('Bereit');
   const [error, setError] = useState('');
@@ -118,9 +119,22 @@ export default function App() {
   };
 
   const refreshGallery = async () => {
-    const response = await fetch('/api/gallery');
-    const data = (await response.json()) as GalleryResponse;
-    setGallery(data);
+    setGalleryLoading(true);
+    try {
+      const response = await fetch('/api/gallery');
+      const data = (await response.json()) as GalleryResponse;
+      setGallery(data);
+    } catch (cause) {
+      const text = cause instanceof Error ? cause.message : 'Galerie konnte nicht geladen werden';
+      sendFrontendLog({
+        level: 'error',
+        message: text,
+        source: 'gallery',
+        stack: cause instanceof Error ? cause.stack : undefined
+      });
+    } finally {
+      setGalleryLoading(false);
+    }
   };
 
   useEffect(() => {
@@ -363,8 +377,17 @@ export default function App() {
               );
             })}
             <div className="gallery-cell gallery-cell-more">
-              <span>+{extraCount}</span>
-              <small>{totalCount} Fotos</small>
+              {galleryLoading ? (
+                <div className="gallery-loading" aria-live="polite">
+                  <span className="loading-ring" aria-hidden="true" />
+                  <small>Album lädt</small>
+                </div>
+              ) : (
+                <>
+                  <span>+{extraCount}</span>
+                  <small>{totalCount} Fotos</small>
+                </>
+              )}
             </div>
           </a>
         </section>

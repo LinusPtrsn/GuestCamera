@@ -276,6 +276,28 @@ a {
   color: #9ec2a8;
 }
 
+.gallery-loading {
+  min-height: 74px;
+  display: grid;
+  place-items: center;
+  gap: 10px;
+}
+
+.loading-ring {
+  width: 34px;
+  height: 34px;
+  border-radius: 999px;
+  border: 3px solid rgba(158, 194, 168, 0.28);
+  border-top-color: #b9efc6;
+  animation: spin 900ms linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .split-shots {
   display: grid;
   grid-template-columns: 1fr 1fr;
