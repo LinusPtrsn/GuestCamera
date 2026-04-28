@@ -51,14 +51,12 @@ const localEnvPath = path.join(projectRoot, '.env');
 const maxUploadBytes = Number(process.env.MAX_UPLOAD_BYTES ?? 250 * 1024 * 1024);
 const thumbnailAvailabilityCache = new Map<string, { ok: boolean; checkedAt: number }>();
 const thumbnailResponseCache = new Map<string, { body: Buffer; contentType: string; checkedAt: number }>();
-const exiftoolCandidates = [
-  process.env.EXIFTOOL_PATH?.trim(),
-  'exiftool'
-].filter(Boolean) as string[];
 const defaultBuildVersion = 'dev';
 
 loadDotEnv(localEnvPath);
 
+const configuredExiftoolPath = process.env.EXIFTOOL_PATH?.trim();
+const exiftoolCandidates = configuredExiftoolPath ? [configuredExiftoolPath] : ['exiftool'];
 const port = Number(process.env.PORT ?? 3001);
 const buildVersion = process.env.GUEST_CAMERA_BUILD_VERSION?.trim() || defaultBuildVersion;
 const immichApiKey = process.env.IMMICH_API_KEY?.trim() ?? '';
@@ -460,6 +458,7 @@ async function writeDescriptionMetadata(filePath: string, description: string) {
   const errors: string[] = [];
   for (const exiftool of exiftoolCandidates) {
     const args = [
+      '-m',
       '-overwrite_original',
       '-Description=' + description,
       '-ImageDescription=' + description,
